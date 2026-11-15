@@ -1,0 +1,393 @@
+/**
+ * The login page's script.
+ *
+ * ── IT WAS THE LIVE REPO'S FILE UNTIL 2026-08-28 ────────────────────────────
+ *
+ * `web/public/login.js` was a byte-for-byte copy of `../MikroDash/public/login.js`.
+ * The operator: "the port should stand on its own without any lingering JS from
+ * the live repo." the login-page check drives this module and the live
+ * file from one harness against the same DOM and compares what each does, so the
+ * copy could be deleted rather than trusted.
+ *
+ * ── IT IS NOT PART OF `app.js` ──────────────────────────────────────────────
+ *
+ * `login.html` is served to somebody who has NO SESSION. Bundling this into the
+ * app would ship the whole dashboard to an unauthenticated browser, and the app
+ * bundle would fail on the first thing it did - there is no socket to open and
+ * no `/api/*` that would answer. Separate entry point, separate document.
+ *
+ * ── THE THREE VIEWS ─────────────────────────────────────────────────────────
+ *
+ * `loadingView` is what the document ships showing, so a slow `/api/auth/status`
+ * does not flash a sign-in form at somebody who is about to be sent to first-run
+ * setup. Which of the other two replaces it is the SERVER's answer, and a failed
+ * fetch falls back to the login form: a server that cannot answer is far more
+ * likely to be busy than to be a fresh install, and offering "create the first
+ * administrator" to somebody whose install already has one is the worse mistake.
+ */
+
+import { loadBranding } from '../branding';
+import { isChinese, languageSwitcher, translate } from '../language';
+
+const byId = (id: string): HTMLElement | null => document.getElementById(id);
+
+function showError(elId: string, msg: string): void {
+  const el = byId(elId);
+  if (!el) return;
+  // textContent, not innerHTML. `d.error` comes from the server and is shown
+  // verbatim; the live file does the same, and this is the reason.
+  const errors: Record<string, string> = {
+    'Please enter username and password.': '请输入用户名和密码。',
+    'Sign in failed.': '登录失败。', 'Setup failed.': '初始化失败。',
+    'Network error. Please try again.': '网络错误，请重试。',
+    "Enter the setup code from MikroDash's log.": '请输入 MikroDash 日志中的初始化代码。',
+    'Username is required.': '请输入用户名。',
+    'Password must be at least 4 characters.': '密码至少需要 4 个字符。',
+    'Passwords do not match.': '两次输入的密码不一致。',
+    'Invalid username or password': '用户名或密码错误',
+  };
+  el.textContent = isChinese() ? (errors[msg] ?? msg) : msg;
+  el.classList.add('visible');
+}
+
+function clearError(elId: string): void {
+  const el = byId(elId);
+  if (!el) return;
+  el.textContent = '';
+  el.classList.remove('visible');
+}
+
+/**
+ * Where to go after a successful sign-in.
+ *
+ * ── AN OPEN REDIRECT IS THE WHOLE POINT OF THIS FUNCTION ────────────────────
+ *
+ * `?next=` is attacker-controlled: anybody can send a link. Four separate checks,
+ * and each one is load-bearing:
+ *
+ *  1. CONTROL CHARACTERS are rejected outright. A newline in a Location header
+ *     is a response-splitting primitive.
+ *  2. The URL is PARSED and its ORIGIN compared, rather than the string being
+ *     inspected. `//evil.example` and a backslash-smuggled authority both parse
+ *     to a foreign origin, and neither looks foreign to a substring test.
+ *  3. Only `pathname + search + hash` is returned - never the parsed URL - so
+ *     even a same-origin absolute URL cannot smuggle credentials or a port.
+ *  4. `//` and `/\` at the START are rejected even after all of that, because a
+ *     browser reads both as protocol-relative and would leave the origin.
+ *
+ * Anything that fails is `/`, which is the app. There is no error path: a bad
+ * `next` is not worth a message, and saying "that redirect looked hostile" tells
+ * whoever sent the link that the check exists.
+ */
+function safeNext(): string {
+  try {
+    const raw = new URLSearchParams(window.location.search).get('next');
+    // Written as \u escapes: the live file spells it `[\x00-\x1f]`, and a
+    // literal control character in a source file is invisible to review.
+    if (!raw || /[\u0000-\u001f]/.test(raw)) return '/';
+    const u = new URL(raw, window.location.origin);
+    if (u.origin !== window.location.origin) return '/';
+    const p = u.pathname + u.search + u.hash;
+    if (p.charAt(0) !== '/' || p.charAt(1) === '/' || p.charAt(1) === '\\') return '/';
+    return p;
+  } catch {
+    // Fall through to the default.
+  }
+  return '/';
+}
+
+/**
+ * The handoff into the app, after a session exists.
+ *
+ * ── ONE COPY, BECAUSE THERE ARE NOW TWO WAYS IN ────────────────────────────
+ *
+ * `preflight.ts` reads `justLoggedIn` on the next document and hides it, and
+ * `main.ts` fades it back in once the app has rendered. All three have to agree
+ * or THE APP RENDERS INVISIBLY - which it did, for one afternoon, when the port
+ * had the first two and not the third. internal/verify pins the three.
+ *
+ * Single sign-in arrives back here by redirect and never runs the password
+ * form, so it calls this rather than repeating it. A second copy of a
+ * three-way handshake is a second thing to keep in step.
+ */
+function enterApp(): void {
+  sessionStorage.setItem('justLoggedIn', '1');
+  document.body.style.transition = 'opacity 1s ease';
+  document.body.style.opacity = '0';
+  // `replace`, not `assign`: the back button must not return to a login form
+  // for a session that now exists.
+  //
+  // The 1000ms matches the transition exactly, so the navigation happens as the
+  // fade completes rather than partway through it.
+  setTimeout(() => { window.location.replace(safeNext()); }, 1000);
+}
+
+/**
+ * The icon URL a provider button may load.
+ *
+ * ALLOW-LISTED BY SHAPE, exactly as branding.ts does its own. The URL comes
+ * from the server, but this page draws it into an `src`, and a check by shape
+ * costs nothing while making the list of things that can appear there finite.
+ */
+const SSO_ICON = /^\/brand\/sso\/[0-9a-f]{8,64}\.png\?v=\d+$/;
+
+interface SSOButton { id: string; name: string; icon: string }
+
+/**
+ * Draw a button per enabled provider.
+ *
+ * NOTHING IS DRAWN when there are none, when the fetch fails, or when the
+ * answer is not the shape expected. The password form is unaffected in every
+ * one of those cases, which is the break-glass guarantee as this page sees it.
+ */
+function renderSSO(): void {
+  const host = byId('ssoButtons');
+  if (!host) return;
+  void fetch('/api/auth/sso/providers', { credentials: 'same-origin' })
+    .then((r) => r.json())
+    .then((d: { providers?: SSOButton[] }) => {
+      const list = Array.isArray(d.providers) ? d.providers : [];
+      if (!list.length) return;
+      const next = new URLSearchParams(window.location.search).get('next') || '';
+      host.innerHTML = '<div class="sso-sep">' + translate('or', '或') + '</div>';
+      list.forEach((p) => {
+        if (!p || typeof p.id !== 'string' || typeof p.name !== 'string') return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-sso';
+        if (typeof p.icon === 'string' && SSO_ICON.test(p.icon)) {
+          const img = document.createElement('img');
+          img.src = p.icon;
+          img.alt = '';
+          btn.appendChild(img);
+        }
+        // textContent, never innerHTML: the name is operator-supplied and this
+        // page renders it before anybody has signed in.
+        const label = document.createElement('span');
+        label.textContent = translate('Sign in with ', '使用以下身份提供商登录：') + p.name;
+        btn.appendChild(label);
+        btn.addEventListener('click', () => {
+          window.location.href = '/api/auth/sso/' + encodeURIComponent(p.id)
+            + '/start' + (next ? '?next=' + encodeURIComponent(next) : '');
+        });
+        host.appendChild(btn);
+      });
+    })
+    .catch(() => {
+      // Silent. A provider list that cannot be fetched means no SSO buttons,
+      // never a broken login page.
+    });
+}
+
+/**
+ * The refusal a failed sign-in comes back with.
+ *
+ * The server sends a SHORT CODE and a reference, because it will not tell a
+ * stranger which check failed. The reference is what joins this message to the
+ * log line that explains it - without it the operator has a generic message
+ * about a remote system they cannot see into.
+ */
+function showSSOError(): void {
+  const q = new URLSearchParams(window.location.search);
+  const code = q.get('err');
+  if (!code) return;
+  const said: Record<string, string> = {
+    denied: translate('Your identity provider did not let you in, or you have no role here.', '身份提供商拒绝登录，或你没有此系统的访问角色。'),
+    expired: translate('That sign-in took too long, or was already used. Please try again.', '登录已超时或已使用，请重试。'),
+    config: translate('This provider is not configured in a way that can work yet.', '身份提供商尚未正确配置。'),
+    provider: translate('The identity provider could not be reached.', '无法连接身份提供商。'),
+    token: translate('The identity provider\'s answer could not be trusted.', '无法验证身份提供商的响应。'),
+  };
+  const ref = q.get('ref');
+  showError('loginError', (said[code] || translate('Sign in failed.', '登录失败。'))
+    + (ref ? translate(' (reference ', '（参考编号 ') + ref + ')' : ''));
+}
+
+function main(): void {
+  const languageButton = languageSwitcher();
+  languageButton.style.cssText = 'position:fixed;top:1rem;right:1rem;z-index:10';
+  document.body.append(languageButton);
+  if (isChinese()) {
+    document.documentElement.lang = 'zh-CN';
+    const texts: Record<string, string> = {
+      '#loginView h2': '登录', '#firstRunView h2': '创建管理员账户',
+      'label[for="loginUser"]': '用户名', 'label[for="loginPass"]': '密码',
+      'label[for="setupCode"]': '初始化代码', 'label[for="setupUser"]': '用户名',
+      'label[for="setupPass"]': '密码', 'label[for="setupPass2"]': '确认密码',
+      '#loginBtn': '登录', '#setupBtn': '创建账户',
+    };
+    for (const [selector, value] of Object.entries(texts)) {
+      const node = document.querySelector(selector);
+      if (node) node.textContent = value;
+    }
+    const note = document.querySelector('#firstRunView .login-note');
+    if (note) {
+      note.textContent = '尚无用户，请创建第一个管理员账户。初始化代码位于 MikroDash 日志中，例如：';
+      const code = document.createElement('code'); code.textContent = 'docker compose logs mikrodash';
+      note.append(code, '。');
+    }
+    const placeholders: Record<string, string> = {
+      loginUser: '用户名', loginPass: '密码', setupPass: '设置密码', setupPass2: '确认密码',
+    };
+    for (const [id, value] of Object.entries(placeholders)) {
+      const input = byId(id) as HTMLInputElement | null;
+      if (input) input.placeholder = value;
+    }
+  }
+  // The install's own name and icon, before anybody signs in (issue #131).
+  void loadBranding(' - Sign In');
+  const loginView = byId('loginView');
+  const firstRunView = byId('firstRunView');
+  const loadingView = byId('loadingView');
+
+  // ── Which view ────────────────────────────────────────────────────────────
+  void fetch('/api/auth/status')
+    .then((r) => r.json())
+    .then((d: { firstRun?: boolean; session?: unknown }) => {
+      if (loadingView) loadingView.style.display = 'none';
+      if (d.firstRun) {
+        if (firstRunView) firstRunView.style.display = '';
+        byId('setupCode')?.focus();
+      } else {
+        if (loginView) loginView.style.display = '';
+        // ── BACK FROM A PROVIDER ────────────────────────────────────────
+        //
+        // The callback set the session cookie and redirected here, so the
+        // browser never ran the password form and never did the handshake.
+        // SCOPED TO ?sso=1 on purpose: a plain /login while already signed in
+        // keeps showing the form exactly as it does today, so this adds a path
+        // instead of changing one.
+        // `session`, NOT an `authenticated` flag: this route has no such field
+        // and never had one. A branch reading it would be permanently false,
+        // the page would sit on the login form with a valid cookie, and nothing
+        // would say why.
+        if (new URLSearchParams(window.location.search).get('sso') === '1' && d.session) {
+          enterApp();
+          return;
+        }
+        showSSOError();
+        renderSSO();
+        byId('loginUser')?.focus();
+      }
+    })
+    .catch(() => {
+      // See the header: a server that cannot answer is far more likely to be
+      // busy than to be a fresh install.
+      if (loadingView) loadingView.style.display = 'none';
+      if (loginView) loginView.style.display = '';
+    });
+
+  // ── Sign in ───────────────────────────────────────────────────────────────
+  function doLogin(): void {
+    clearError('loginError');
+    const username = (byId('loginUser') as HTMLInputElement | null)?.value.trim() || '';
+    const password = (byId('loginPass') as HTMLInputElement | null)?.value || '';
+    if (!username || !password) {
+      showError('loginError', 'Please enter username and password.');
+      return;
+    }
+    const btn = byId('loginBtn') as HTMLButtonElement | null;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = translate('Signing in…', '正在登录…');
+    }
+    void fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    })
+      .then((r) => r.json())
+      .then((d: { ok?: boolean; error?: string }) => {
+        if (d.ok) {
+          enterApp();
+        } else {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = translate('Sign In', '登录');
+          }
+          showError('loginError', d.error || 'Sign in failed.');
+        }
+      })
+      .catch(() => {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = translate('Sign In', '登录');
+        }
+        showError('loginError', 'Network error. Please try again.');
+      });
+  }
+
+  byId('loginBtn')?.addEventListener('click', doLogin);
+  byId('loginPass')?.addEventListener('keydown', (e) => {
+    if ((e as KeyboardEvent).key === 'Enter') doLogin();
+  });
+  // Enter in the USERNAME moves to the password rather than submitting. A form
+  // that signed in on the first Enter would submit an empty password and answer
+  // with a failure the person did not ask for.
+  byId('loginUser')?.addEventListener('keydown', (e) => {
+    if ((e as KeyboardEvent).key === 'Enter') byId('loginPass')?.focus();
+  });
+
+  // ── First-run setup ───────────────────────────────────────────────────────
+  function doSetup(): void {
+    clearError('setupError');
+    const setupCode = (byId('setupCode') as HTMLInputElement | null)?.value.trim() || '';
+    const username = (byId('setupUser') as HTMLInputElement | null)?.value.trim() || '';
+    const password = (byId('setupPass') as HTMLInputElement | null)?.value || '';
+    const confirm = (byId('setupPass2') as HTMLInputElement | null)?.value || '';
+    if (!setupCode) { showError('setupError', 'Enter the setup code from MikroDash\'s log.'); return; }
+    if (!username) { showError('setupError', 'Username is required.'); return; }
+    // FOUR, not eight. Reproduced rather than improved: the server enforces its
+    // own rule and this is only the early message, so raising it here would
+    // reject a password the install would have accepted.
+    if (password.length < 4) {
+      showError('setupError', 'Password must be at least 4 characters.');
+      return;
+    }
+    if (password !== confirm) { showError('setupError', 'Passwords do not match.'); return; }
+    const btn = byId('setupBtn') as HTMLButtonElement | null;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = translate('Creating account…', '正在创建账户…');
+    }
+    void fetch('/api/users/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, setupCode }),
+    })
+      .then((r) => r.json())
+      .then((d: { ok?: boolean; error?: string }) => {
+        if (d.ok) {
+          // NOT a redirect. The account exists but there is no session yet, so
+          // this hands over to the sign-in form with the username already filled
+          // and the cursor in the password - one field to type, rather than a
+          // bounce through a login page that would look like the setup failed.
+          if (firstRunView) firstRunView.style.display = 'none';
+          if (loginView) loginView.style.display = '';
+          const u = byId('loginUser') as HTMLInputElement | null;
+          if (u) u.value = username;
+          byId('loginPass')?.focus();
+        } else {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = translate('Create Account', '创建账户');
+          }
+          showError('setupError', d.error || 'Setup failed.');
+        }
+      })
+      .catch(() => {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = translate('Create Account', '创建账户');
+        }
+        showError('setupError', 'Network error. Please try again.');
+      });
+  }
+
+  byId('setupBtn')?.addEventListener('click', doSetup);
+  byId('setupPass2')?.addEventListener('keydown', (e) => {
+    if ((e as KeyboardEvent).key === 'Enter') doSetup();
+  });
+}
+
+main();

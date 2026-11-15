@@ -1,0 +1,30 @@
+name: Build MikroDash Chinese image
+on:
+  push:
+    branches: [mikrodash-zh-build]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned upstream
+        uses: actions/checkout@v4
+        with:
+          repository: SecOps-7/MikroDash
+          ref: 8ea7df6e724fcd63d9c1c3aa5af9e2e398a6d512
+          path: upstream
+      - name: Apply Chinese source changes
+        run: cp -a mikrodash-overlay/. upstream/
+      - name: Build image
+        run: docker build -t mikrodash-zh:v0.8.82 upstream
+      - name: Export image
+        run: docker save mikrodash-zh:v0.8.82 | gzip -1 > mikrodash-zh-v0.8.82-amd64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mikrodash-zh-v0.8.82-amd64
+          path: mikrodash-zh-v0.8.82-amd64.tar.gz
+          retention-days: 7
