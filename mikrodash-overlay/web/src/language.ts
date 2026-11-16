@@ -27,6 +27,12 @@ const labels: Record<string, string> = {
   'Connections Map': '连接地图', 'Top Countries': '国家或地区排行',
   'Connection Flow': '连接流向', 'Top Ports': '端口排行',
   'Firewall Actions': '防火墙动作', 'Signal Health': '信号质量',
+  'Interface Lists': '接口列表', 'Routing Tables': '路由表',
+  'Routing Rules': '路由规则', 'DHCP Clients': 'DHCP 客户端',
+  'DHCP Servers': 'DHCP 服务器', 'Apps Usage': '应用流量',
+  'Notifications': '通知', 'Appearance': '外观', 'Provisioning': '设备部署',
+  'Features': '功能', 'About': '关于', 'NTP Client': 'NTP 客户端',
+  'Clock': '时钟', 'Logging': '日志设置', 'SNMP': 'SNMP',
 };
 
 const key = 'mikrodash-language';
@@ -37,6 +43,11 @@ export function isChinese(): boolean {
 
 export function translate(original: string, chinese: string): string {
   return isChinese() ? chinese : original;
+}
+
+// Use only with application-authored labels, never with router-supplied values.
+export function translateLabel(original: string): string {
+  return isChinese() ? (labels[original] ?? original) : original;
 }
 
 export function languageSwitcher(): HTMLButtonElement {
@@ -60,7 +71,7 @@ export function initLanguage(): void {
   if (!isChinese()) return;
   document.documentElement.lang = 'zh-CN';
   // Only leaf elements in known, static presentation classes are eligible.
-  const selector = '.nav-label, h3.card-title, .fw-scard-title, .if-scard-title, .dhcp-card-title, .scard-title';
+  const selector = '.nav-label, h3.card-title, .fw-scard-title, .if-scard-title, .dhcp-card-title, .scard-title, #settingsTabBar > button';
   document.querySelectorAll<HTMLElement>(selector).forEach((element) => {
     if (element.children.length || element.id) return;
     const original = element.textContent?.trim() ?? '';
