@@ -39,7 +39,7 @@
 // kind, or naming one Go does not have, fails tsc.
 
 import type { PillTone } from '../palette';
-import { translateLabel } from '../language';
+import { translateLabel, translateField, translate } from '../language';
 import { el, esc, resRow, renderSortHeader, sortRows, debounce, pill, type SortCol, type SortState } from '../dom';
 import { mountAdds, mountRows } from '../resource';
 import { AREAS, type Area, type AreaPanel, type PillKind } from '../gen/areas';
@@ -240,7 +240,7 @@ function renderTabs(area: Area): void {
     '<button class="stab' + (i === at ? ' active' : '') + '" type="button" role="tab"' +
     ' aria-selected="' + (i === at ? 'true' : 'false') + '"' +
     ' data-areatab="' + esc(area.key) + '" data-areatabindex="' + i + '">' +
-    esc(title) + '</button>').join('');
+    esc(translateLabel(title)) + '</button>').join('');
 }
 
 /** Point the Add slot at the table on screen, and let the engine fill it. */
@@ -283,20 +283,19 @@ function render(area: Area): void {
   if (!(table?.groupBy && openGroup[area.key + '#' + at])) body.removeAttribute('data-open-group');
 
   if (!payload) {
-    body.innerHTML = '<div class="empty-state">Waiting&hellip;</div>';
+    body.innerHTML = '<div class="empty-state">' + translate('Waiting…', '等待数据…') + '</div>';
     return;
   }
   // THREE DIFFERENT SENTENCES, because they have three different fixes: the
   // account cannot read the menu, this build has no such menu, or the router
   // genuinely holds none of these.
   if (payload.denied) {
-    body.innerHTML = '<div class="empty-state">This router’s MikroDash account cannot read ' +
-      esc(declared.resource) + '. RouterOS requires a user group with permission for this menu.</div>';
+    body.innerHTML = '<div class="empty-state">' + translate('This router’s MikroDash account cannot read ', '此路由器的 MikroDash 账户无法读取 ') +
+      esc(declared.resource) + translate('. RouterOS requires a user group with permission for this menu.', '。请为 RouterOS 用户组授予对应菜单的权限。') + '</div>';
     return;
   }
   if (table?.unsupported) {
-    body.innerHTML = '<div class="empty-state">This router does not have that menu. ' +
-      'It may need a package this RouterOS build does not include.</div>';
+    body.innerHTML = '<div class="empty-state">' + translate('This router does not have that menu. It may need a package this RouterOS build does not include.', '此路由器没有该菜单，可能需要安装当前 RouterOS 版本未包含的软件包。') + '</div>';
     return;
   }
 
@@ -313,7 +312,7 @@ function render(area: Area): void {
           '<th style="width:34%">' + esc(columnLabel(c)) + '</th>' +
           '<td>' + valueCell(declared.pills[c], r.values?.[c]) + '</td></tr>').join('') +
         '</tbody></table>'
-      : '<div class="empty-state">The router did not return these settings.</div>';
+      : '<div class="empty-state">' + translate('The router did not return these settings.', '路由器未返回这些设置。') + '</div>';
     syncAddSlot(area);
     return;
   }
@@ -348,13 +347,13 @@ function renderGrouped(area: Area, at: number, table: AreaTable, body: HTMLEleme
     const declared = area.tables[at]!;
     body.innerHTML = '<table class="table table-vcenter mb-0">' +
       '<thead><tr id="areaThead-' + esc(area.key) + '"></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="4" class="empty-state">Nothing here yet.' +
-        (writable[declared.resource] && creatable[declared.resource] !== false ? ' Use <strong>Add</strong> to create one.' : '') +
+      (rows || '<tr><td colspan="4" class="empty-state">' + translate('Nothing here yet.', '暂无数据。') +
+        (writable[declared.resource] && creatable[declared.resource] !== false ? translate(' Use <strong>Add</strong> to create one.', ' 使用<strong>添加</strong>创建条目。') : '') +
         '</td></tr>') + '</tbody></table>';
     groupDrawn[k] = { col: sort.col, dir: sort.dir };
     renderSortHeader('areaThead-' + area.key, [
-      { key: 'name', label: esc(noun) }, { key: 'count', label: 'Entries' },
-      { key: 'dynamic', label: 'Dynamic' }, { key: 'disabled', label: 'Disabled' },
+      { key: 'name', label: esc(noun) }, { key: 'count', label: translate('Entries', '条目') },
+      { key: 'dynamic', label: translate('Dynamic', '动态') }, { key: 'disabled', label: translate('Disabled', '已禁用') },
     ], sort, () => {
       const was = groupDrawn[k];
       if (was && was.col === sort.col && was.dir === 'desc') sort.col = '';
@@ -438,8 +437,8 @@ function drawRows(area: Area, at: number, list: AreaPayload['tables'][number]['r
     '<thead><tr id="areaThead-' + esc(area.key) + '"></tr></thead>' +
     '<tbody data-res-rows="' + esc(declared.resource) + '">' +
     (rows || '<tr><td colspan="' + (declared.columns.length + (arrows ? 1 : 0)) + '" class="empty-state">' +
-      'Nothing here yet.' + (writable[declared.resource] && creatable[declared.resource] !== false
-        ? ' Use <strong>Add</strong> to create one.' : '') +
+      translate('Nothing here yet.', '暂无数据。') + (writable[declared.resource] && creatable[declared.resource] !== false
+        ? translate(' Use <strong>Add</strong> to create one.', ' 使用<strong>添加</strong>创建条目。') : '') +
       '</td></tr>') +
     '</tbody></table>';
   drawn[area.key + '#' + at] = { col: sort.col, dir: sort.dir };
@@ -462,7 +461,7 @@ function drawRows(area: Area, at: number, list: AreaPayload['tables'][number]['r
  */
 function columnLabel(name: string): string {
   const spaced = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  return translateField(name, spaced.charAt(0).toUpperCase() + spaced.slice(1));
 }
 
 /**

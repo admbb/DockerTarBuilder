@@ -33,6 +33,36 @@ const labels: Record<string, string> = {
   'Notifications': '通知', 'Appearance': '外观', 'Provisioning': '设备部署',
   'Features': '功能', 'About': '关于', 'NTP Client': 'NTP 客户端',
   'Clock': '时钟', 'Logging': '日志设置', 'SNMP': 'SNMP',
+  'Members': '成员', 'Lists': '列表', 'Servers': '服务器', 'Networks': '网络',
+  'Rules': '规则', 'Actions': '动作', 'Communities': '团体', 'Transfer': '传输',
+  'Peers': '对等端', 'Envs': '环境变量', 'Mounts': '挂载',
+  'Last hour': '最近一小时', '24 hours': '24 小时', '7 days': '7 天', '30 days': '30 天',
+  'Total': '总流量', 'Apps': '应用', 'Top app': '流量最高的应用', 'Unnamed': '未识别',
+  'App': '应用', 'Category': '类别', 'Share': '占比', 'Waiting for traffic': '正在等待流量数据',
+};
+
+const fieldLabels: Record<string, string> = {
+  name: '名称', list: '列表', interface: '接口', interfaces: '接口', address: '地址',
+  addresses: '地址', gateway: '网关', disabled: '已禁用', dynamic: '动态', invalid: '无效',
+  inactive: '未激活', enabled: '已启用', running: '运行中', comment: '备注',
+  include: '包含', exclude: '排除', builtin: '内置', port: '端口', proto: '协议',
+  availableFrom: '允许访问的来源', remote: '远程地址', commonName: '通用名称',
+  privateKey: '私钥', publicKey: '公钥', trusted: '受信任', invalidAfter: '失效时间',
+  expiresAfter: '到期时间', owner: '所有者', policy: '策略', runCount: '运行次数',
+  lastStarted: '上次运行时间', startTime: '开始时间', interval: '间隔', nextRun: '下次运行',
+  mode: '模式', servers: '服务器', status: '状态', syncedServer: '同步服务器',
+  systemOffset: '系统偏差', minPoll: '最小轮询间隔', maxPoll: '最大轮询间隔',
+  time: '时间', date: '日期', timeZoneName: '时区', timeZoneAutodetect: '自动检测时区',
+  gmtOffset: 'GMT 偏移', dstActive: '夏令时生效', topics: '主题', action: '动作',
+  prefix: '前缀', isDefault: '默认', target: '目标', memoryLines: '内存行数',
+  contact: '联系人', location: '位置', trapTarget: 'Trap 目标', trapVersion: 'Trap 版本',
+  engineId: '引擎 ID', security: '安全', readAccess: '读取权限', writeAccess: '写入权限',
+  type: '类型', size: '大小', lastModified: '最后修改时间', fib: '转发表',
+  srcAddress: '源地址', dstAddress: '目标地址', routingMark: '路由标记', table: '路由表',
+  addDefaultRoute: '添加默认路由', addressPool: '地址池', leaseTime: '租约时间',
+  authoritative: '权威服务器', dnsServer: 'DNS 服务器', domain: '域名',
+  remoteImage: '远程镜像', restartCount: '重启次数', startOnBoot: '开机启动',
+  src: '源', dst: '目标', key: '键', listenPort: '监听端口',
 };
 
 const key = 'mikrodash-language';
@@ -48,6 +78,10 @@ export function translate(original: string, chinese: string): string {
 // Use only with application-authored labels, never with router-supplied values.
 export function translateLabel(original: string): string {
   return isChinese() ? (labels[original] ?? original) : original;
+}
+
+export function translateField(key: string, fallback: string): string {
+  return isChinese() ? (fieldLabels[key] ?? fallback) : fallback;
 }
 
 export function languageSwitcher(): HTMLButtonElement {
@@ -83,12 +117,14 @@ export function initLanguage(): void {
   if (!isChinese()) return;
   document.documentElement.lang = 'zh-CN';
   // Only leaf elements in known, static presentation classes are eligible.
-  const selector = '.nav-label, h3.card-title, .fw-scard-title, .if-scard-title, .dhcp-card-title, .scard-title, #settingsTabBar > button';
+  const selector = '.nav-label, h3.card-title, .fw-scard-title, .if-scard-title, .dhcp-card-title, .scard-title, #settingsTabBar > button, #page-apps .stab, #page-apps .tool-card-label, #appsThead th, #page-apps .empty-state';
   document.querySelectorAll<HTMLElement>(selector).forEach((element) => {
     if (element.children.length || element.id) return;
     const original = element.textContent?.trim() ?? '';
     if (Object.hasOwnProperty.call(labels, original)) element.textContent = labels[original] ?? original;
   });
+  const appsSearch = document.querySelector<HTMLInputElement>('#appsSearch');
+  if (appsSearch) { appsSearch.placeholder = '搜索应用'; appsSearch.setAttribute('aria-label', '搜索应用'); }
   const ai: Record<string, string> = {
     '#aiAgentClear': '清除', '.ai-welcome-title': '询问有关路由器的问题',
     '.ai-suggest-label': '试试这些问题', '#aiProposeReject': '不做更改',

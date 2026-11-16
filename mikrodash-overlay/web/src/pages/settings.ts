@@ -1,0 +1,1183 @@
+/**
+ * The Settings page - the read half.
+ *
+ * ── ONLY THE READ HALF, AND THE REASON IS THE OTHER PROCESS ────────────────
+ *
+ * `POST /api/settings` is not wired and will not be until cutover: the live
+ * `settings.js` caches the whole settings object at first load and never
+ * re-reads the file, so a write from this side is invisible to the running Node
+ * app AND is silently reverted by its next save. See internal/server/settings_api.go.
+ *
+ * So this fills the form and nothing else. The form is the part that has to be
+ * right on day one anyway - a field populated from the wrong default is a
+ * setting the operator "changes" to the value it already had, or worse, saves
+ * away without noticing.
+ *
+ * ── THE FIELD TABLE IS GENERATED ───────────────────────────────────────────
+ *
+ * `web/src/gen/settings-form-map.ts` comes from the live `populate()` via
+ * The settings-form-map tool. ~100 inputs, and three defaults for an absent
+ * value that look identical on screen when the setting IS set:
+ *
+ *   checkOn   `data[f] !== false`  - ABSENT MEANS ON
+ *   checkOff  `!!data[f]`          - absent means off
+ *
+ * Every page toggle is `checkOn`. Porting them as `checkOff` would hide every
+ * page on a fresh install, and nothing about the code would look wrong.
+ */
+
+import { el, esc, pill } from '../dom';
+import { translateLabel } from '../language';
+import { loadAbout } from './about';
+// `siteIdsOf` is the ARRAY-WINS-OUTRIGHT rule, ported once in `routers.ts` and
+// reused rather than restated: a second copy here would drift, and the half that
+// drifts silently is the empty array - an explicit `siteIds: []` means "no
+// sites", so falling through to the `siteId` mirror resurrects a membership
+// just cleared.
+import { siteIdsOf } from './routers';
+import { PAGE_NAV_MAP, VIEW_PRESET_KEY } from '../gen/view-presets';
+import { presetTiers, presetToggles } from '../presets';
+import { AREAS } from '../gen/areas';
+import {
+  FORM_FIELDS, VALUE_DEFAULTS, PLACEHOLDER_CREDENTIALS,
+  type ValueDefault,
+} from '../gen/settings-form-map';
+
+/** The settings payload, whichever of the two the server sent. */
+export type SettingsPayload = Record<string, unknown>;
+
+/**
+ * What an input shows for a value the operator has never set.
+ *
+ * FIVE SHAPES, because populate() has five, and they disagree exactly where it
+ * matters. `orNumber` is the one that would be missed by reading: an absent
+ * smtpPort renders as 587, not as an empty box, because 587 is the port the app
+ * is actually using.
+ */
+function valueFor(raw: unknown, rule: ValueDefault | undefined): string {
+  const kind = rule ? rule.kind : 'undefinedToEmpty';
+  switch (kind) {
+    case 'blank':
+      // Never shows a stored value at all - see PLACEHOLDER_CREDENTIALS.
+      return '';
+    case 'orEmpty':
+      // `data.X || ''` - a falsy value, INCLUDING 0 and '', becomes empty.
+      return raw ? String(raw) : '';
+    case 'orNumber':
+      return raw ? String(raw) : String(rule && rule.fallback !== undefined ? rule.fallback : '');
+    case 'stringOf':
+      // `String(data.X)`, guarded by `!= null` at the call site - so a null or
+      // undefined leaves the input ALONE rather than writing "null" into it.
+      return raw == null ? '' : String(raw);
+    case 'bare':
+      // Assigned straight through. `undefined` reaching an input's value writes
+      // the string "undefined" in a browser, and the original does exactly that
+      // - reproduced rather than tidied, because a port that showed an empty box
+      // here would disagree about what the operator sees.
+      return String(raw);
+    default:
+      return raw !== undefined ? String(raw) : '';
+  }
+}
+
+/**
+ * The generated pages' toggles, rendered into the Visible Pages grid.
+ *
+ * ── ONE LIST, AND DELIBERATELY NOT IN PAGE_NAV_MAP ──────────────────────────
+ *
+ * Each of these is an entry in `hiddenAreas`, not a `pageX` boolean of its own:
+ * forty areas would otherwise be forty settings keys. They are also kept OUT of
+ * `PAGE_NAV_MAP`, which is walked writing to `el('s_' + settingsKey)` across the
+ * whole document - the trap the AI Agent page's note records. The presets reach
+ * these boxes by their own `data-area-toggle` instead (presetToggles in
+ * web/src/presets.ts), each by the tier its area declares.
+ *
+ * Rendered rather than written into the markup, because the markup is a fixed
+ * document and the areas are a declaration. Each is a box in the grid's
+ * `.ff-multi`, the same markup as the hand-written pages before it.
+ */
+function renderAreaToggles(hidden: readonly string[]): void {
+  const grid = el('visiblePagesGrid');
+  if (!grid || AREAS.length === 0) return;
+  for (const area of AREAS) {
+    const id = 'sarea_' + area.key;
+    let box = el<HTMLInputElement>(id);
+    if (!box) {
+      const label = document.createElement('label');
+      label.innerHTML = '<input type="checkbox" id="' + id + '" data-area-toggle="' +
+        esc(area.key) + '">' + esc(translateLabel(area.title));
+      grid.appendChild(label);
+      box = el<HTMLInputElement>(id);
+    }
+    // TICKED MEANS VISIBLE, as every other toggle in this grid reads.
+    if (box) box.checked = !hidden.includes(area.key);
+  }
+}
+
+/** Fill the form from a settings payload. */
+export function populateSettings(data: SettingsPayload): void {
+  const hidden = Array.isArray(data.hiddenAreas) ? data.hiddenAreas as string[] : [];
+  renderAreaToggles(hidden);
+
+  for (const key of FORM_FIELDS.value) {
+    const input = el<HTMLInputElement>('s_' + key);
+    if (!input) continue;
+    const rule = VALUE_DEFAULTS[key];
+    // `stringOf` is guarded at its call site: a null value leaves the input
+    // untouched rather than being written as an empty string.
+    if (rule && rule.kind === 'stringOf' && data[key] == null) continue;
+    input.value = valueFor(data[key], rule);
+  }
+
+  for (const key of FORM_FIELDS.checkOn) {
+    const input = el<HTMLInputElement>('s_' + key);
+    // ABSENT MEANS ON. Only an explicit `false` unticks it.
+    if (input) input.checked = data[key] !== false;
+  }
+
+  for (const key of FORM_FIELDS.checkOff) {
+    const input = el<HTMLInputElement>('s_' + key);
+    if (input) input.checked = !!data[key];
+  }
+
+  // ── THE SLIDER READOUTS ARE GONE WITH THEIR SLIDERS ─────────────────────
+  //
+  // A loop stood here writing "72%" beside three range inputs: the CPU
+  // threshold, the ping-loss threshold and the notification cooldown. All three
+  // are properties of a notification channel now and their cards left the page,
+  // so the loop had nothing to iterate.
+  //
+  // What it recorded is worth keeping, because the next such control will meet
+  // it: the map generator captures the `s_<key>` assignments driven by
+  // populate()'s field LISTS, and a one-off statement is not in it - so a slider
+  // wired that way sets its input and leaves its readout blank, and the
+  // 518-case gate cannot see it either, because it only inspects ids the map
+  // names.
+
+  // ── GUARDED CHECKBOXES: ABSENT MEANS "LEAVE IT ALONE" ────────────────────
+  //
+  // The alert-type toggles are written only when the setting is PRESENT. Unlike
+  // `checkOff`, an absent value does not write `false` - the checkbox keeps the
+  // markup's own default. On a fresh install the difference is every alert type
+  // showing as switched off while the server still has it enabled, with the push
+  // channel firing and the notification bell staying empty. The live comment on
+  // `_PAGE_SETTING_KEYS` records that exact failure happening once already.
+  for (const key of FORM_FIELDS.checkGuarded) {
+    if (data[key] === undefined) continue;
+    const input = el<HTMLInputElement>('s_' + key);
+    if (input) input.checked = !!data[key];
+  }
+
+  // ── THE SYSTEM PROMPT BOX SHOWS THE DEFAULT RATHER THAN NOTHING ──────────
+  //
+  // The stored value is empty until somebody edits it, and the server reads
+  // empty as "use the built-in prompt". An empty box would therefore be honest
+  // about the stored value and useless about the behaviour: the operator could
+  // not see what the assistant is being told, let alone adjust it.
+  //
+  // So an unset prompt renders as the default the server would use. Saving then
+  // stores that text verbatim, which is the readable outcome - what you see is
+  // what is sent.
+  //
+  // THE DEFAULT IS CARRIED ON THE ELEMENT, not in a module variable, so Reset
+  // needs no shared state and no import back into this half of the page. It
+  // arrives as a derived key on the settings payload; see settings_api.go.
+  // The refresh interval is stored in seconds and shown as hours and seconds.
+  showOverviewInterval();
+
+  // The Agent Overview card's prompt box works the same way.
+  for (const p of AI_PROMPT_BOXES) {
+    const promptBox = el<HTMLTextAreaElement>(p.box);
+    if (!promptBox) continue;
+    const def = data[p.defaultKey];
+    const fallback = typeof def === 'string' ? def : '';
+    promptBox.dataset.default = fallback;
+    const raw = data[p.key];
+    const stored = typeof raw === 'string' ? raw : '';
+    promptBox.value = stored.trim() === '' ? fallback : stored;
+    updateAiPromptCount(p);
+  }
+
+  // ── THE SIGN-IN TOGGLE, WHICH NOTHING SET UNTIL 0.8.15 ───────────────────
+  //
+  // `s_authEnabled` has no `checked` attribute, so an unpopulated box reads OFF
+  // on every load whatever the install actually does. That was merely a wrong
+  // label while nothing collected the form; the moment a Save button exists it
+  // becomes an install-wide open-access switch, because the collector would post
+  // `authMode: 'none'` from a control the operator never touched - and once the
+  // mode is `none`, `maySaveSettings` returns true for everyone.
+  //
+  // `authModeOf` was written for exactly this line and was never called, the
+  // same shape as the Save button itself. ABSENT MEANS MODERN there, so a fresh
+  // install ticks the box rather than offering to switch sign-in off.
+  const auth = el<HTMLInputElement>('s_authEnabled');
+  if (auth) auth.checked = authModeOf(data) !== 'none';
+
+  // The credentials that are never pre-filled. The MASK is a presence signal,
+  // not a value: the input stays empty and the placeholder carries the meaning,
+  // so an operator who saves without touching the field sends nothing at all.
+  for (const [key, texts] of Object.entries(PLACEHOLDER_CREDENTIALS)) {
+    const input = el<HTMLInputElement>('s_' + key);
+    if (!input) continue;
+    input.value = '';
+    input.placeholder = data[key] ? texts.whenSet : texts.whenNot;
+  }
+
+  // The preset buttons describe the checkboxes above them, so they can only be
+  // marked once those hold real values. This is that moment.
+  setViewPresetUI(detectViewPreset());
+}
+
+/**
+ * The auth toggle, which is a toggle over a two-valued string.
+ *
+ * ANYTHING THAT IS NOT THE LITERAL 'none' COUNTS AS ON, matching the server's
+ * `_authMode()`. The live comment gives the reason: a stored `''` or a legacy
+ * `'basic'` must not read as "authentication disabled" - which is what a plain
+ * `mode === 'modern'` test would do, silently turning the login off on screen
+ * for an install that still requires it.
+ */
+export function authModeOf(data: SettingsPayload): 'none' | 'modern' {
+  return data.authMode === 'none' ? 'none' : 'modern';
+}
+
+// ── the tab shell ───────────────────────────────────────────────────────────
+
+/**
+ * Tabs whose panes have nothing to save.
+ *
+ * The actions bar is HIDDEN on these rather than disabled: Routers and About
+ * both write through their own controls, and a Save button that applied to
+ * nothing would be a button that looks broken.
+ */
+const NO_SAVE_TABS = ['routers', 'about'];
+
+let aboutFetched = false;
+
+/**
+ * Show one Settings tab.
+ *
+ * ── THE ORDER OF THE LAST TWO STEPS IS LOAD-BEARING ────────────────────────
+ *
+ * `_sizePrincipalsCard` measures the card from its own top offset, which can
+ * only be read once the panel is on screen - and the card reserves room for the
+ * actions bar, so it must run AFTER that bar's visibility is settled. The live
+ * comment records what happened when it did not: Settings always opens on
+ * Routers, so every earlier attempt found the Authentication panel still
+ * `display:none`, returned early, and left the card at content height until an
+ * inner tab click happened to re-run the sizer.
+ */
+export function activateSettingsTab(tabName: string): void {
+  document.querySelectorAll('#settingsTabBar .stab').forEach((t) => {
+    (t as HTMLElement).classList.toggle('active', (t as HTMLElement).dataset.tab === tabName);
+  });
+  document.querySelectorAll('#page-settings .stab-panel').forEach((p) => {
+    p.classList.toggle('active', p.id === 'stab-' + tabName);
+  });
+
+  const actions = el('settingsActions');
+  if (actions) {
+    actions.style.display = NO_SAVE_TABS.indexOf(tabName) !== -1 ? 'none' : 'flex';
+  }
+
+  const sizer = (globalThis as unknown as { _sizePrincipalsCard?: () => void })._sizePrincipalsCard;
+  if (sizer) sizer();
+
+  // ONCE PER PAGE LIFETIME. The latch is what stops a tab the operator clicks
+  // between panes from re-fetching on every visit; the version cannot change
+  // while the page is open.
+  // ── THE ABOUT TAB OWNS ITS OWN LOAD ──────────────────────────────────────
+  //
+  // It used to fetch `/healthz` here for one string, the version. The tab now
+  // shows the build, the runtime, the dependencies and the release notes, which
+  // is a module's worth of rendering rather than a line, and `loadAbout` has its
+  // own once-per-lifetime latch.
+  if (tabName === 'about') loadAbout();
+}
+
+/**
+ * Wire the tab bar.
+ *
+ * SETTINGS ALWAYS OPENS ON ROUTERS. It used to restore the last tab from
+ * localStorage, which meant landing on whatever you happened to be editing last
+ * - usually not where you want to start. The persistence was removed rather than
+ * merely ignored, so nothing keeps writing a key no one reads; this port keeps
+ * it removed rather than reintroducing it as a "nice to have".
+ */
+export function mountSettingsTabs(): void {
+  document.querySelectorAll('#settingsTabBar .stab').forEach((t) => {
+    t.addEventListener('click', () => {
+      activateSettingsTab((t as HTMLElement).dataset.tab || '');
+    });
+  });
+  document.addEventListener('mikrodash:pagechange', (e) => {
+    if ((e as CustomEvent).detail !== 'settings') return;
+    activateSettingsTab('routers');
+  });
+  mountViewPresets();
+}
+
+/**
+ * Wire the Visible Pages presets.
+ *
+ * ── THEY WERE INERT, AND BOTH AUDITS PASSED ────────────────────────────────
+ *
+ * The four buttons have been in the markup all along, `detectViewPreset` and
+ * `setViewPresetUI` were both written and exported, and NOTHING EVER CALLED
+ * EITHER. No click listener existed, so the buttons did nothing and none of them
+ * was ever marked active.
+ *
+ * The attributes audit did not catch it because `data-view-preset` IS read -
+ * inside `setViewPresetUI`, which is itself dead. A dead reader satisfies a scan
+ * that asks "is this attribute referenced in source". That is the same shape as
+ * the `.fw-tab` selector that matched nothing and the reorder arrows nobody
+ * bound: rendered control, absent wiring, green suite.
+ *
+ * `custom` deliberately changes no checkbox. It is a LABEL for a selection that
+ * matches no preset, not a fifth arrangement, which is why `detectViewPreset`
+ * returns it as a fallback rather than listing it.
+ */
+export function mountViewPresets(): void {
+  const wrap = el('viewPresetWrap');
+  if (!wrap) return;
+
+  const named: Record<string, string[]> = presetTiers();
+
+  wrap.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement | null)?.closest?.('[data-view-preset]') as HTMLElement | null;
+    if (!btn) return;
+    const name = btn.dataset.viewPreset || '';
+    const pages = named[name];
+    if (pages) {
+      const on: Record<string, boolean> = {};
+      pages.forEach((pg) => { on[pg] = true; });
+      // The generated pages' toggles too (presetToggles). A page whose
+      // checkbox is not rendered is SKIPPED, not forced off - the same rule
+      // `detectViewPreset` applies when it compares.
+      for (const { page, box } of presetToggles()) box.checked = !!on[page];
+    }
+    setViewPresetUI(pages ? name : 'custom');
+  });
+
+  // Touching any page checkbox by hand is what makes the selection Custom, and
+  // the button strip has to say so rather than keep claiming Standard.
+  for (const sKey of Object.keys(PAGE_NAV_MAP)) {
+    el<HTMLInputElement>('s_' + sKey)
+      ?.addEventListener('change', () => setViewPresetUI(detectViewPreset()));
+  }
+  // The generated pages' toggles are rendered later, with the settings, so
+  // their changes are caught by delegation rather than bound here.
+  document.addEventListener('change', (e) => {
+    if ((e.target as HTMLElement | null)?.matches?.('input[data-area-toggle]')) setViewPresetUI(detectViewPreset());
+  });
+}
+
+// ── the principals card ─────────────────────────────────────────────────────
+
+/**
+ * Size the principals card to the bottom of the viewport.
+ *
+ * MEASURED FROM THE CARD'S REAL TOP, not a CSS calc(). A calc would have to
+ * hardcode the topbar, the tab strip, the Authentication card above and the save
+ * bar below - and be wrong the moment any of them changes size. Reading the top
+ * offset costs one layout and is right by construction.
+ *
+ * Returns early when the card is not on screen, because `getBoundingClientRect`
+ * on a hidden element reports zeros and the card would be sized to the whole
+ * viewport height the moment it appeared.
+ */
+export function sizePrincipalsCard(): void {
+  const card = document.getElementById('principalsCard') as HTMLElement | null;
+  if (!card || card.style.display === 'none' || !card.offsetParent) return;
+
+  const actions = document.getElementById('settingsActions') as HTMLElement | null;
+  // The card reserves room for the save bar, but only when that bar is actually
+  // displayed - on the Routers and About tabs it is hidden, and reserving for it
+  // would leave a strip of dead space.
+  const reserve = (actions && actions.offsetParent
+    ? actions.getBoundingClientRect().height + 12 : 0) + 24;
+  const top = card.getBoundingClientRect().top;
+
+  // A FLOOR, so a short viewport gives a usable card that scrolls rather than
+  // one collapsed to nothing.
+  card.style.height = Math.max(320, window.innerHeight - top - reserve) + 'px';
+}
+
+/**
+ * Switch the principal tabs (Users / Groups / Sites / Roles).
+ *
+ * DELEGATED ON `document`, not bound to the strip, because the card starts
+ * hidden and is shown by `applyCaps()` after the auth fetch resolves - a
+ * listener attached at mount would find nothing to attach to.
+ *
+ * IT SETS `aria-selected` AS WELL AS THE CLASS, which the Settings tab switcher
+ * above does not. The two look like the same function and are not: this strip is
+ * a `tablist` and a screen reader reads the attribute, not the class.
+ */
+export function mountPrincipalTabs(): void {
+  document.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement | null;
+    const tab = t && t.closest ? (t.closest('.ptab') as HTMLElement | null) : null;
+    if (!tab) return;
+    e.preventDefault();
+
+    const want = tab.getAttribute('data-ptab');
+    document.querySelectorAll('.ptab').forEach((el) => {
+      const on = el === tab;
+      el.classList.toggle('active', on);
+      el.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.querySelectorAll('.ptab-panel').forEach((p) => {
+      p.classList.toggle('active', p.id === 'ptab-' + want);
+    });
+
+    // Panels differ in height, and the card is sized from its own top offset -
+    // which does not move, but re-measuring keeps it right if the Authentication
+    // card above has grown (the open-access warning appearing, say).
+    sizePrincipalsCard();
+  });
+}
+
+// ── auth mode and who may see the principals card ───────────────────────────
+
+/** What `applyAuthModeVisibility` needs from the rest of the page. */
+export interface AuthVisibilityDeps {
+  /** `window._caps.managePrincipals`, or undefined while the caps fetch is in flight. */
+  mayManage: boolean | undefined;
+  /** Load the roles, then the users. Kept injectable so the ORDER can be gated. */
+  loadRoles: () => Promise<void>;
+  loadUsers: () => void;
+  /** Load the SSO providers. AFTER the roles, for the same reason the users
+   *  wait: the role-mapping rows draw a <select> of roles, and one built before
+   *  they arrive is an empty list the operator reads as "there are no roles". */
+  loadSSO: () => void;
+  sizeCard: () => void;
+}
+
+/**
+ * Show the right half of the Authentication tab for the current auth mode.
+ *
+ * ── AUTH MODE ALONE IS NOT ENOUGH, AND THAT IS THE POINT ───────────────────
+ *
+ * An operator is in `modern` mode and must still not see user management, so the
+ * card is gated on the CAPABILITY as well. `applyCaps()` writes the same
+ * element's display from a separate fetch, so whichever resolves last wins -
+ * including the ordering that would leave the card on screen.
+ *
+ * ── UNKNOWN CAPS COUNT AS NO ───────────────────────────────────────────────
+ *
+ * While the caps fetch is in flight the answer is not "probably yes". The live
+ * comment states the consequence plainly: "the flash is absence rather than
+ * exposure". A port that treated undefined as permissive would show the principal
+ * graph for as long as a slow fetch took, to someone who may never be allowed it.
+ */
+export function applyAuthModeVisibility(mode: string, deps: AuthVisibilityDeps): void {
+  const noneWarn = document.getElementById('authNoneWarn') as HTMLElement | null;
+  const modernFields = document.getElementById('modernAuthFields') as HTMLElement | null;
+  const usersTabBtn = document.getElementById('ptabBtn-users') as HTMLElement | null;
+  const usersPanel = document.getElementById('ptab-users') as HTMLElement | null;
+  const userCard = document.getElementById('principalsCard') as HTMLElement | null;
+
+  if (noneWarn) noneWarn.style.display = mode === 'none' ? '' : 'none';
+  if (modernFields) modernFields.style.display = mode === 'modern' ? '' : 'none';
+
+  const mayManage = !!deps.mayManage;
+  if (userCard) userCard.style.display = mayManage ? '' : 'none';
+  // Size it once it is actually on screen - offsetParent is null while hidden,
+  // and the sizer returns early on that.
+  if (mayManage) deps.sizeCard();
+
+  // The Users tab is hidden outside modern mode, AND the selection is moved off
+  // it if it was showing: an empty tab that cannot be populated reads as a bug.
+  const usersUsable = mode === 'modern' && mayManage;
+  if (usersTabBtn) usersTabBtn.style.display = usersUsable ? '' : 'none';
+  if (!usersUsable && usersPanel && usersPanel.classList.contains('active')) {
+    const first = document.querySelector('.ptab:not([style*="display: none"])') as HTMLElement | null;
+    if (first) first.click();
+  }
+
+  // ROLES BEFORE USERS AND GROUPS. Both render grant rows through a lookup that
+  // reads the loaded roles, so loading them out of order shows "unknown role"
+  // until the next refresh. The chain is what enforces it - firing both and
+  // hoping roles wins is the bug.
+  if (mayManage) {
+    void deps.loadRoles().then(() => {
+      if (usersUsable) deps.loadUsers();
+      // NOT gated on `usersUsable`: SSO providers are configurable whatever the
+      // auth mode, and a provider cannot be edited from a tab that never loaded.
+      deps.loadSSO();
+    });
+  }
+}
+
+// ── what access a principal has, in words ───────────────────────────────────
+
+/** A grant row as the Access Management card receives it. */
+export interface GrantView {
+  // OPTIONAL, because the readers that only LABEL a grant do not need it - but
+  // the server sends it on every row and the editor's Remove button is built
+  // from it. It was absent entirely until 2026-08-28, which made `user.grants`
+  // unassignable to `EditableGrant[]` and would have forced a cast at each of
+  // the three call sites: three places to be wrong about the same payload.
+  id?: string | number;
+  role_id?: string | null;
+  role?: string | null;
+  scope_type: string;
+  scope_id?: string | null;
+}
+
+/** The lookups the labels resolve against, published by the loaders. */
+export interface PrincipalLookups {
+  roles?: { id: string; name: string }[];
+  sitesById?: Record<string, { name: string }>;
+  routers?: { id: string; label?: string; host?: string }[];
+}
+
+/**
+ * The role a grant names.
+ *
+ * "unknown role" IS A REAL ANSWER, not a defensive fallback: a grant naming a
+ * deleted role confers nothing, and rbac.js resolves it the same way. It is also
+ * what appears when the roles have not loaded yet, which is why
+ * `applyAuthModeVisibility` chains the loads rather than firing both.
+ */
+export function roleName(g: GrantView, look: PrincipalLookups): string {
+  const r = (look.roles || []).find((x) => x.id === g.role_id);
+  return r ? r.name : 'unknown role';
+}
+
+/**
+ * The scope a grant applies to.
+ *
+ * ANYTHING THAT IS NOT `global` OR `site` IS TREATED AS A ROUTER. That is the
+ * original's shape - a bare `else`, not a third comparison - so a scope type
+ * this build does not know renders as "router: unknown" rather than as nothing.
+ * Reproduced rather than tightened: a port that returned an empty label for an
+ * unrecognised scope would render a grant that appears to apply to nothing.
+ */
+export function scopeLabel(g: GrantView, look: PrincipalLookups): string {
+  if (g.scope_type === 'global') return 'all routers';
+  if (g.scope_type === 'site') {
+    const s = look.sitesById && g.scope_id ? look.sitesById[g.scope_id] : undefined;
+    return 'site: ' + (s ? s.name : 'unknown');
+  }
+  const r = (look.routers || []).find((x) => x.id === g.scope_id);
+  return 'router: ' + (r ? (r.label || r.host) : 'unknown');
+}
+
+/**
+ * One line per grant, or an explicit note that there are none.
+ *
+ * THE "No access" PILL IS NOT AN EMPTY STATE. A principal with no grants and a
+ * principal whose grants have not loaded would both render as blank, and the
+ * card would be saying "this person has no access" in the second case without
+ * knowing it. The pill says it deliberately; the loader's ordering is what makes
+ * it true.
+ */
+export function accessSummary(grants: GrantView[] | undefined, look: PrincipalLookups): string {
+  if (!grants || !grants.length) {
+    return pill('No access', 'muted');
+  }
+  return grants.map((g) =>
+    '<div style="font-size:.72rem">' + esc(roleName(g, look))
+    + ' <span style="color:var(--text-muted)">- ' + esc(scopeLabel(g, look)) + '</span></div>',
+  ).join('');
+}
+
+// ── the principal tables ────────────────────────────────────────────────────
+
+/** A user row as the Users pane receives it. */
+export interface UserView {
+  id: string;
+  username: string;
+  grants?: GrantView[];
+}
+
+/**
+ * One row of the Users table.
+ *
+ * ONE ACCESS COLUMN BUILT FROM GRANTS, spanning two columns, replacing the Role
+ * badge and router pills that used to sit there. Those read the legacy
+ * role/allowedRouterIds mirror, which cannot express a custom role or a grant
+ * held at two different sites.
+ *
+ * The buttons carry `data-action` rather than inline handlers, because the row
+ * is rebuilt on every refresh and the listeners are attached by the caller.
+ */
+export function userRowHtml(u: UserView, look: PrincipalLookups): string {
+  return '<td>' + esc(u.username) + '</td>'
+    + '<td colspan="2">' + accessSummary(u.grants, look) + '</td>'
+    + '<td style="text-align:right;white-space:nowrap">'
+    + '<button class="sbtn sbtn-ghost" style="margin-right:.3rem" data-action="edit">Edit</button>'
+    + '<button class="sbtn sbtn-danger" data-action="del">Delete</button>'
+    + '</td>';
+}
+
+/** A group row as the Groups pane receives it. */
+export interface GroupView {
+  id: string;
+  name: string;
+  description?: string | null;
+  memberUserIds?: string[];
+  grants?: GrantView[];
+}
+
+/**
+ * The Groups table.
+ *
+ * ── IT PHRASES ACCESS DIFFERENTLY FROM THE USERS PANE, ON PURPOSE ──────────
+ *
+ * Three differences, all reproduced rather than unified:
+ *
+ *   - the users card wraps each grant in a `<div>` with role and scope in
+ *     separate spans; this joins `role - scope` with `<br>`;
+ *   - this ESCAPES THE COMBINED STRING, so the separator sits inside the escaped
+ *     text, where the users card escapes each half independently;
+ *   - the empty states differ in wording - "No access" against "no access
+ *     granted" - and in markup.
+ *
+ * They are two views of the same data written at different times. Harmonising
+ * them is a redesign, and the rule is that the rendered page does not change.
+ */
+export function groupTableHtml(groups: GroupView[], look: PrincipalLookups): string {
+  if (!groups.length) {
+    return '<tr><td class="tbl-empty" colspan="4">'
+      + 'No groups yet. Add one to grant a role to several people at once.</td></tr>';
+  }
+  const td = 'border-bottom:1px solid var(--border)';
+  return groups.map((g) => {
+    const access = (g.grants || []).length
+      ? (g.grants || []).map((x) => esc(roleName(x, look) + ' - ' + scopeLabel(x, look))).join('<br>')
+      : '<span style="color:var(--text-muted)">no access granted</span>';
+    return '<tr>'
+      + '<td style="' + td + ';font-weight:600">' + esc(g.name)
+        + (g.description ? '<div style="font-weight:400;font-size:.7rem;color:var(--text-muted)">' + esc(g.description) + '</div>' : '') + '</td>'
+      + '<td style="' + td + '">' + (g.memberUserIds || []).length + '</td>'
+      + '<td style="' + td + '">' + access + '</td>'
+      + '<td style="' + td + ';text-align:right;white-space:nowrap">'
+        + '<button class="sbtn sbtn-ghost" data-group-action="edit" data-group-id="' + esc(g.id) + '">Edit</button> '
+        + '<button class="sbtn sbtn-danger" data-group-action="delete" data-group-id="' + esc(g.id) + '">Delete</button>'
+      + '</td></tr>';
+  }).join('');
+}
+
+// ── the Sites and Roles panes ───────────────────────────────────────────────
+
+export interface SiteView { id: string; name: string; description?: string | null }
+
+/** One row of the Sites table. */
+export function siteRowHtml(s: SiteView, routerCount: number): string {
+  const td = 'border-bottom:1px solid var(--border)';
+  return '<tr>'
+    + '<td style="' + td + ';font-weight:600">' + esc(s.name) + '</td>'
+    // AN EM DASH, not an empty cell: a site with no description and one whose
+    // description failed to load would otherwise look the same.
+    + '<td style="' + td + ';color:var(--text-muted)">' + (s.description ? esc(s.description) : '-') + '</td>'
+    + '<td style="' + td + '">' + routerCount + '</td>'
+    + '<td style="' + td + ';text-align:right;white-space:nowrap">'
+      + '<button class="sbtn sbtn-ghost" data-site-action="edit" data-site-id="' + esc(s.id) + '">Edit</button> '
+      + '<button class="sbtn sbtn-danger" data-site-action="delete" data-site-id="' + esc(s.id) + '">Delete</button>'
+    + '</td></tr>';
+}
+
+/**
+ * Devices-per-site, the port of `_siteRouterCounts`.
+ *
+ * COUNTED ON THE CLIENT from the device list the page already holds, not joined
+ * on the server: the numbers are small and this keeps `GET /api/sites` a plain
+ * table read.
+ *
+ * A DEVICE COUNTS ONCE IN EACH OF ITS SITES (#117), so the totals no longer sum
+ * to the device count. That is correct rather than a rounding artefact - the
+ * column answers "how many devices are in this site", and a device held at two
+ * sites is in both of them.
+ */
+export function siteRouterCounts(
+  routers: { siteIds?: string[]; siteId?: string | null }[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const r of routers || []) {
+    for (const id of siteIdsOf(r)) counts[id] = (counts[id] || 0) + 1;
+  }
+  return counts;
+}
+
+/**
+ * What the operator is asked before a site is deleted.
+ *
+ * ── THE WARNING IS #117-AWARE, AND THAT IS THE POINT OF IT ──────────────────
+ *
+ * "They keep any other sites, and are not deleted." Before multi-site, a device
+ * had ONE site and deleting it left the device with none - so the honest warning
+ * then was about losing its only membership. Now a device may be held at several
+ * and loses exactly one, which is a much smaller thing to agree to. A port that
+ * kept the old wording would frighten an operator out of a safe action.
+ *
+ * "device(s)", not a pluralised word: the live string is literal, and the count
+ * is shown even when it is 1.
+ *
+ * NO WARNING AT ALL when nothing is affected - an empty site is deleted with a
+ * bare question, because a "0 devices will lose this site" line reads as though
+ * something might.
+ */
+export function siteDeletePrompt(name: string, routerCount: number): string {
+  const warn = routerCount
+    ? '\n\n' + routerCount + ' device(s) will lose this site. They keep any other sites, '
+      + 'and are not deleted.'
+    : '';
+  return 'Delete site "' + name + '"?' + warn;
+}
+
+/** What the site form holds when Save is pressed. */
+export interface SiteFormValues {
+  /** Empty when adding; the site's id when editing. */
+  id: string;
+  name: string;
+  description: string;
+  /** The town picker's value, or null for "no location". */
+  place: unknown;
+  /** The ids of the ticked device checkboxes, in DOM order. */
+  routerIds: string[];
+}
+
+/** One HTTP call the save needs to make. */
+export interface SiteSaveRequest {
+  method: 'POST' | 'PUT';
+  /** `:id` for the membership call is filled from the first reply - see below. */
+  path: string;
+  body: Record<string, unknown>;
+}
+
+export type SiteSavePlan =
+  | { error: string }
+  | { requests: [SiteSaveRequest, SiteSaveRequest] };
+
+/**
+ * What pressing Save on the site form sends.
+ *
+ * ── IT IS ALWAYS TWO REQUESTS, AND THE ORDER IS FORCED ──────────────────────
+ *
+ * The site's own fields and its membership live behind different endpoints
+ * because they are different authorization decisions (see
+ * `internal/server/sites_api.go`). The membership call has to go SECOND, and not
+ * for tidiness: when adding, there is no id until the create returns one. The
+ * live comment says exactly that.
+ *
+ * The second request's path therefore carries `{id}` rather than a real id when
+ * creating, and the caller substitutes what the first reply gave it. That is
+ * modelled explicitly instead of having this function take a callback, so the
+ * whole decision stays pure and testable.
+ *
+ * ── EVERY FIELD IS ALWAYS SENT, WHICH IS NOT THE SAME AS THE API'S RULE ─────
+ *
+ * `ParseSiteBody` distinguishes absent from null: an absent `place` leaves the
+ * location alone, a null one clears it. THIS FORM NEVER SENDS AN ABSENT ONE -
+ * it reads the picker every time, so a form saved with the picker empty CLEARS
+ * the location, deliberately. The absent case exists for other callers, and the
+ * server has to keep supporting it; a port that "simplified" the server to match
+ * this client would break a rename made through the API.
+ */
+export function siteSavePlan(form: SiteFormValues): SiteSavePlan {
+  // TRIMMED BEFORE THE EMPTINESS TEST, matching the live `value.trim()`. A name
+  // of spaces is refused here rather than by the server, so the operator is told
+  // in the form instead of by a round trip.
+  const name = form.name.trim();
+  if (!name) return { error: 'Name is required' };
+
+  const editing = form.id !== '';
+  return {
+    requests: [
+      {
+        method: editing ? 'PUT' : 'POST',
+        path: editing ? '/api/sites/' + encodeURIComponent(form.id) : '/api/sites',
+        body: { name, description: form.description.trim(), place: form.place ?? null },
+      },
+      {
+        method: 'PUT',
+        // `{id}` is a PLACEHOLDER when creating. Spelling it out beats returning
+        // a half-built URL: a caller that forgets to substitute gets a 404 from
+        // a path that obviously names nothing, rather than silently writing
+        // membership to a site called "undefined".
+        path: '/api/sites/' + (editing ? encodeURIComponent(form.id) : '{id}') + '/routers',
+        body: { routerIds: form.routerIds },
+      },
+    ],
+  };
+}
+
+/** One device in the site form's membership list. */
+export interface SiteMemberDevice {
+  id: string;
+  label?: string | null;
+  host?: string | null;
+  siteIds?: string[];
+  siteId?: string | null;
+}
+
+/**
+ * The site form's devices, for the shared picker (`device-picker.ts`).
+ *
+ * ── "ALSO IN", NOT "CURRENTLY IN" ───────────────────────────────────────────
+ *
+ * Adding a device here ADDS this site; it does not move the device out of the
+ * ones it already has (#117). So each device's other sites are its `detail`,
+ * which the search results show and the search matches.
+ *
+ * ── THE DETAIL DROPS SITES THIS CLIENT CANNOT NAME ──────────────────────────
+ *
+ * A membership whose site this browser has not loaded - created a moment ago
+ * by another administrator, or removed while the form was open - would read
+ * `also in undefined`. Saying nothing is better, and is what the checkbox list
+ * did.
+ */
+export function siteMemberItems(
+  devices: SiteMemberDevice[],
+  site: { id: string } | null,
+  sitesById: Record<string, { name: string }>,
+): { id: string; label: string; host?: string; detail?: string }[] {
+  return devices.map((r) => {
+    const elsewhere: string[] = [];
+    for (const id of siteIdsOf(r)) {
+      if (site && id === site.id) continue;
+      const known = sitesById[id];
+      if (known) elsewhere.push(known.name);
+    }
+    return {
+      id: r.id, label: r.label || r.host || r.id, host: r.host || undefined,
+      detail: elsewhere.length ? 'also in ' + elsewhere.join(', ') : undefined,
+    };
+  });
+}
+
+/** The devices already in `site`, in fleet order; none when adding. */
+export function siteMembersOf(devices: SiteMemberDevice[], site: { id: string } | null): string[] {
+  return site ? devices.filter((r) => siteIdsOf(r).indexOf(site.id) !== -1).map((r) => r.id) : [];
+}
+
+export function siteTableHtml(sites: SiteView[], counts: Record<string, number>): string {
+  if (!sites.length) {
+    return '<tr><td class="tbl-empty" colspan="4">'
+      + 'No sites yet. Add one to group your devices.</td></tr>';
+  }
+  return sites.map((s) => siteRowHtml(s, counts[s.id] || 0)).join('');
+}
+
+export interface RoleView {
+  id: string;
+  name: string;
+  description?: string | null;
+  builtin?: boolean;
+  pages: { page: string; access: string }[];
+  grants?: number;
+}
+
+/**
+ * What a role reaches, in a phrase.
+ *
+ * A BUILTIN ROLE IS "every page" WITHOUT CONSULTING ITS ROWS. Its reach is
+ * structural - rbac.js grants it everything rather than storing a matrix - so
+ * counting `pages` would report whatever happens to be in the table, which for a
+ * seeded role is often nothing.
+ */
+export function pageSummary(role: RoleView): string {
+  if (role.builtin) return 'every page';
+  if (!role.pages.length) return '<span style="color:var(--text-muted)">no pages</span>';
+  const reads = role.pages.filter((p) => p.access === 'read').length;
+  const writes = role.pages.length - reads;
+  const bits: string[] = [];
+  if (reads) bits.push(reads + ' read');
+  if (writes) bits.push(writes + ' write');
+  return bits.join(', ');
+}
+
+/**
+ * The Roles table.
+ *
+ * A BUILTIN ROW SHOWS A LOCK AND NO ACTIONS. Its reach is structural, so editing
+ * it would either do nothing or narrow every administrator at once.
+ *
+ * The grant count is pluralised, and ZERO IS AN EM DASH rather than "0 grants":
+ * an unused role and a role used once are different enough to say differently.
+ */
+export function roleTableHtml(roles: RoleView[]): string {
+  if (!roles.length) {
+    return '<tr><td class="tbl-empty" colspan="4">No roles yet.</td></tr>';
+  }
+  return roles.map((r) => {
+    const actions = r.builtin
+      ? '<span style="color:var(--text-muted);font-size:.7rem">built in</span>'
+      : '<button class="sbtn sbtn-outline is-sm" data-role-edit="' + esc(r.id) + '">Edit</button>'
+        + ' <button class="sbtn sbtn-danger is-sm" data-role-del="' + esc(r.id) + '">Delete</button>';
+    return '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td>' + esc(r.name)
+        + (r.description ? '<div style="color:var(--text-muted);font-size:.7rem">' + esc(r.description) + '</div>' : '') + '</td>'
+      + '<td>' + pageSummary(r) + '</td>'
+      + '<td>' + (r.grants ? r.grants + ' grant' + (r.grants === 1 ? '' : 's') : '<span style="color:var(--text-muted)">-</span>') + '</td>'
+      + '<td style="text-align:right;white-space:nowrap">' + actions + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+/**
+ * One row of the role matrix: a page and a none/read/write segmented control.
+ *
+ * ── A PAGE WITH NO WRITE ACTIONS SHOWS THE SEGMENT DISABLED, NOT HIDDEN ────
+ *
+ * The matrix keeps its shape and the reason stays visible - the button carries
+ * a title saying so. Hiding it would leave a ragged grid and no explanation for
+ * why one row has two choices and the next has three. `writeCapable` comes from
+ * the server's projection table, never from a list restated here.
+ *
+ * `none` is selected when there is NO access at all, which is why the test is
+ * `(level === 'none' && !access) || level === access` rather than a comparison
+ * against a default string.
+ */
+export function rolePageRowHtml(
+  page: { key: string; title: string }, access: string | undefined, writeCapable: string[],
+): string {
+  const writable = writeCapable.indexOf(page.key) !== -1;
+  const seg = ['none', 'read', 'write'].map((level) => {
+    const on = (level === 'none' && !access) || level === access;
+    const dead = level === 'write' && !writable;
+    return '<button type="button" class="sbtn ' + (on ? 'sbtn-primary' : 'sbtn-outline') + ' is-sm"'
+      + ' data-page-set="' + esc(page.key) + '" data-level="' + level + '"'
+      + (dead ? ' disabled title="No write actions on this page yet"' : '') + '>'
+      + level.charAt(0).toUpperCase() + level.slice(1) + '</button>';
+  }).join('');
+  return '<div data-page-row="' + esc(page.key) + '" style="display:flex;align-items:center;'
+    + 'justify-content:space-between;gap:.5rem;padding:.25rem .4rem;border-bottom:1px solid var(--border)">'
+    + '<span>' + esc(page.title) + '</span>'
+    + '<span style="display:flex;gap:.2rem;flex-shrink:0">' + seg + '</span>'
+    + '</div>';
+}
+
+// ── the grant editor ────────────────────────────────────────────────────────
+
+/** A grant row carrying the id the editor's Remove button needs. */
+export interface EditableGrant extends GrantView { id: string | number }
+
+/** What the editor's two pickers are built from. */
+export interface GrantEditorOptions {
+  roles: { id: string; name: string }[];
+  sitesById: Record<string, { name: string }>;
+  routers: { id: string; label?: string; host?: string }[];
+}
+
+/**
+ * The grant editor's markup, shared by the Groups and Users forms.
+ *
+ * ── A THIRD PHRASING OF THE SAME SENTENCE ──────────────────────────────────
+ *
+ * This is the third place in the card that renders `role - scope`, and all three
+ * differ:
+ *
+ *   Users card     a <div> per grant, role and scope in SEPARATE spans, each
+ *                  escaped on its own
+ *   Groups table   `esc(role + ' - ' + scope)` joined with <br> - the separator
+ *                  is inside the escaped text
+ *   this editor    `esc(role) + ' - ' + esc(scope)` in ONE flex span
+ *
+ * Three renderings written at different times. Reproduced rather than unified,
+ * because the rule is that the rendered page does not change - and because the
+ * escaping genuinely differs between them, so "unifying" would be a behaviour
+ * change dressed as a tidy-up.
+ *
+ * ── THE PICKERS ARE BUILT FROM DATA, NOT FROM CONSTANTS ────────────────────
+ *
+ * Roles come from `/api/roles`. They used to be three hardcoded options, which
+ * could not name a custom role at all. The scope picker's values are
+ * `type:id` pairs - `global:` with an empty id is "all routers".
+ *
+ * The CLICK HANDLER IS NOT PORTED: removing and adding a grant are writes, and
+ * the writes belong to Node until cutover. This builds the markup only.
+ */
+export function grantEditorHtml(
+  grants: EditableGrant[] | undefined, o: GrantEditorOptions,
+): string {
+  const look: PrincipalLookups = { roles: o.roles, sitesById: o.sitesById, routers: o.routers };
+
+  const rows = (grants || []).map((g) =>
+    '<div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.3rem">'
+    + '<span style="flex:1">' + esc(roleName(g, look)) + ' - ' + esc(scopeLabel(g, look)) + '</span>'
+    + '<button class="sbtn sbtn-ghost is-sm" data-grant-del="' + esc(String(g.id)) + '">Remove</button>'
+    + '</div>').join('');
+
+  const sites = o.sitesById || {};
+  const siteOpts = Object.keys(sites).map((id) =>
+    '<option value="site:' + esc(id) + '">Site: ' + esc((sites[id] as { name: string }).name) + '</option>').join('');
+  const rtrOpts = (o.routers || []).map((r) =>
+    '<option value="router:' + esc(r.id) + '">Router: ' + esc(r.label || r.host) + '</option>').join('');
+
+  // `rows || <the empty note>` - an empty string is falsy, so a principal with
+  // no grants gets the note rather than a blank box.
+  return (rows || '<div style="color:var(--text-muted);margin-bottom:.3rem">No access granted yet.</div>')
+    // The add row is the shared control row: both pickers at the one control
+    // height, sharing the width, and the button beside them.
+    + '<div class="ff-row">'
+      + '<select class="sform-input" data-grant-role aria-label="Role">'
+        + (o.roles || []).map((r) => '<option value="' + esc(r.id) + '">' + esc(r.name) + '</option>').join('')
+      + '</select>'
+      + '<select class="sform-input" data-grant-scope aria-label="Scope">'
+        + '<option value="global:">All routers</option>' + siteOpts + rtrOpts
+      + '</select>'
+      + '<button class="sbtn sbtn-outline" data-grant-add>Add</button>'
+    + '</div>';
+}
+
+// ── the view presets ────────────────────────────────────────────────────────
+
+
+/**
+ * Which named preset the ticked page toggles correspond to, or 'custom'.
+ *
+ * ── `advanced` IS DERIVED, SO A NEW PAGE JOINS IT BY EXISTING ──────────────
+ *
+ * The original fills it from PAGE_NAV_MAP at startup rather than listing it.
+ * Freezing it into a literal would mean the next page added silently drops out
+ * of Advanced, and the preset would stop matching for anyone who had selected
+ * it.
+ *
+ * ── A TOGGLE THAT IS NOT IN THE DOM IS SKIPPED, NOT COUNTED AS OFF ─────────
+ *
+ * `if (!el) continue;` - a page whose checkbox is not rendered does not break
+ * the match. Treating a missing element as unchecked would report 'custom' for
+ * a form that is simply showing fewer rows.
+ */
+export function detectViewPreset(): string {
+  const named: Record<string, string[]> = presetTiers();
+  const toggles = presetToggles();
+
+  // ── THE ORDER IS NOT LOAD-BEARING, AND I FIRST WROTE THAT IT WAS ────────
+  //
+  // The obvious reading is that it must be: `home` is a subset of `standard`,
+  // which is a subset of `advanced`, so surely the narrowest has to be tried
+  // first. It does not, because the comparison below is EXACT - every rendered
+  // toggle must equal that preset's membership, so a `home` selection fails
+  // `standard` on the first page `standard` adds. At most one preset can match
+  // any state.
+  //
+  // Measured, not reasoned: reversing this list changes no answer in the gate's
+  // nine cases. The order is kept as the original writes it, because matching
+  // the source costs nothing and a reader comparing the two should not have to
+  // wonder why they differ.
+  for (const name of ['home', 'standard', 'advanced']) {
+    const on: Record<string, boolean> = {};
+    (named[name] as string[]).forEach((pg) => { on[pg] = true; });
+
+    let match = true;
+    for (const { page, box } of toggles) {
+      if (box.checked !== !!on[page]) { match = false; break; }
+    }
+    if (match) return name;
+  }
+  return 'custom';
+}
+
+/**
+ * Mark the chosen preset and remember it.
+ *
+ * The persistence is per-browser and deliberate - unlike the Settings TAB, whose
+ * persistence was removed upstream. This one is a view preference rather than a
+ * position in a form.
+ */
+export function setViewPresetUI(name: string): void {
+  document.querySelectorAll('.view-preset-btn').forEach((btn) => {
+    const e = btn as HTMLElement;
+    e.classList.toggle('active', e.dataset.viewPreset === name);
+  });
+  try { localStorage.setItem(VIEW_PRESET_KEY, name); } catch { /* site data blocked */ }
+}
+
+/**
+ * The two editable prompts: the chat assistant's and the Agent Overview card's.
+ * Same behaviour, so one table rather than two copies of the wiring.
+ */
+const AI_PROMPT_BOXES = [
+  { key: 'aiSystemPrompt', box: 's_aiSystemPrompt', reset: 'aiPromptReset',
+    count: 'aiPromptCount', defaultKey: 'aiSystemPromptDefault', max: 8000 },
+  { key: 'aiOverviewPrompt', box: 's_aiOverviewPrompt', reset: 'aiOverviewPromptReset',
+    count: 'aiOverviewPromptCount', defaultKey: 'aiOverviewPromptDefault', max: 500 },
+] as const;
+type AiPromptBox = (typeof AI_PROMPT_BOXES)[number];
+
+/** The live character count beside a prompt box. */
+function updateAiPromptCount(p: AiPromptBox): void {
+  const box = el<HTMLTextAreaElement>(p.box);
+  const out = el(p.count);
+  if (!box || !out) return;
+  // `maxlength` counts UTF-16 units and so does `.length`, so this is the same
+  // number the browser enforces rather than a second opinion about it.
+  out.textContent = box.value.length + ' / ' + p.max;
+}
+
+/**
+ * Reset to Default, and the character counter, for each prompt box.
+ *
+ * ── RESET WRITES THE BOX, IT DOES NOT SAVE ───────────────────────────────────
+ *
+ * Pressing it puts the built-in prompt back in the textarea and nothing else, so
+ * it is undoable by pressing Cancel or navigating away, and takes effect only
+ * when the operator saves like any other edit. A reset that wrote straight
+ * through would be a destructive action behind a button labelled like a
+ * convenience.
+ */
+/** The refresh interval's bounds, matching `aiOverviewIntervalSec` in the write tables. */
+const OVERVIEW_MIN_SEC = 60;
+const OVERVIEW_MAX_SEC = 86400;
+
+/**
+ * Split the stored refresh interval into the hours and seconds boxes.
+ *
+ * Whole hours go in the first box and the remainder in the second, so 10800
+ * reads 3h 0s and 5400 reads 1h 1800s. The stored value stays in seconds.
+ */
+function showOverviewInterval(): void {
+  const hidden = el<HTMLInputElement>('s_aiOverviewIntervalSec');
+  const h = el<HTMLInputElement>('aiOverviewHours');
+  const sec = el<HTMLInputElement>('aiOverviewSeconds');
+  if (!hidden || !h || !sec) return;
+  const total = parseInt(hidden.value, 10);
+  if (!Number.isFinite(total) || total <= 0) { h.value = ''; sec.value = ''; return; }
+  const hours = Math.floor(total / 3600);
+  h.value = String(hours);
+  sec.value = String(total - hours * 3600);
+}
+
+/**
+ * Combine the two boxes into the stored value.
+ *
+ * 0 hours applies the seconds alone. CLAMPED HERE to 1 minute .. 24 hours,
+ * because the server IGNORES an out-of-range value rather than refusing it, so
+ * an unclamped 25h would save as "nothing changed" with no message. Both boxes
+ * empty leaves the setting untouched.
+ */
+function storeOverviewInterval(): void {
+  const hidden = el<HTMLInputElement>('s_aiOverviewIntervalSec');
+  const h = el<HTMLInputElement>('aiOverviewHours');
+  const sec = el<HTMLInputElement>('aiOverviewSeconds');
+  if (!hidden || !h || !sec) return;
+  if (h.value.trim() === '' && sec.value.trim() === '') return;
+  const hours = Math.max(0, parseInt(h.value, 10) || 0);
+  const seconds = Math.max(0, parseInt(sec.value, 10) || 0);
+  const total = Math.min(OVERVIEW_MAX_SEC, Math.max(OVERVIEW_MIN_SEC, hours * 3600 + seconds));
+  hidden.value = String(total);
+}
+
+export function initAiPromptControls(): void {
+  el('aiOverviewHours')?.addEventListener('input', storeOverviewInterval);
+  el('aiOverviewSeconds')?.addEventListener('input', storeOverviewInterval);
+  // Show the clamped result once the operator leaves a box, so what they read is
+  // what will be saved.
+  el('aiOverviewHours')?.addEventListener('change', showOverviewInterval);
+  el('aiOverviewSeconds')?.addEventListener('change', showOverviewInterval);
+
+  for (const p of AI_PROMPT_BOXES) {
+    el<HTMLTextAreaElement>(p.box)?.addEventListener('input', () => updateAiPromptCount(p));
+    el<HTMLButtonElement>(p.reset)?.addEventListener('click', () => {
+      const target = el<HTMLTextAreaElement>(p.box);
+      if (!target) return;
+      target.value = target.dataset.default || '';
+      updateAiPromptCount(p);
+    });
+  }
+}
