@@ -91,8 +91,8 @@ export function languageSwitcher(): HTMLButtonElement {
   const switcher = document.createElement('button');
   switcher.type = 'button';
   switcher.className = 'sbtn sbtn-sm';
-  switcher.textContent = chinese ? 'English' : '简体中文';
-  switcher.setAttribute('aria-label', chinese ? 'Switch to English' : '切换到简体中文');
+  switcher.textContent = chinese ? '切换为英语' : '简体中文';
+  switcher.setAttribute('aria-label', chinese ? '切换为英语' : '切换到简体中文');
   switcher.addEventListener('click', () => {
     try { localStorage.setItem(key, chinese ? 'en' : 'zh-CN'); } catch { return; }
     location.reload();
