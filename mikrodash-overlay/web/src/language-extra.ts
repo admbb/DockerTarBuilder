@@ -108,6 +108,7 @@ export const extraLabels: Record<string, string> = {
 
 // Shared application-authored UI terms. Router values and user names are not passed here.
 Object.assign(extraLabels, {
+  'Apps Traffic Ranking':'应用流量排行',
   'BACKUP SCHEDULE':'备份计划', 'FREQUENCY':'频率', 'BACKUP TIME':'备份时间',
   'RESTORE POINTS TO KEEP':'保留的还原点数量', 'Reboot…':'重启…', 'PACKAGE':'软件包',
   'SIZE':'大小', 'BUILT':'构建时间', 'Export capture':'导出抓包', 'DIRECTION':'方向',

@@ -21,7 +21,7 @@
 
 import type { Socket } from '../socket';
 import { isRosDisconnected } from '../banners';
-import { renderTalkers } from './dashboard-talkers';
+import { clearDashboardApps, renderDashboardApps } from './dashboard-apps';
 import { renderNetwatch } from './dashboard-netwatch';
 import { renderVpnCard } from './dashboard-vpn';
 import { noteSystemUpdate, flushPendingSystem, resetSysMeta } from './dashboard-system';
@@ -70,9 +70,9 @@ export function initDashboard(socket: Socket): void {
   // gauges and the uptime chip, which a viewer sees on every page.
   socket.on('system:update', (d) => noteSystemUpdate(d));
 
-  socket.on('talkers:update', (d) => renderTalkers(d));
+  socket.on('apps:update', (d) => renderDashboardApps(d));
   socket.on('wan:update', (d) => renderNetworkWan(d));
-  socket.on('router:switched', () => clearNetworkWan());
+  socket.on('router:switched', () => { clearNetworkWan(); clearDashboardApps(); });
   socket.on('netwatch:update', (d) => renderNetwatch(d));
   // The VPN collector emits the same payload into the page room and the card
   // room, so this handler runs for a viewer on either.

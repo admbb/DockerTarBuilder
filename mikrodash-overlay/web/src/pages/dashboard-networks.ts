@@ -46,9 +46,9 @@ export function renderNetworkWan(data: WANPayload): void {
     return;
   }
   host.innerHTML = ifaces.length
-    ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.25rem">' + ifaces.map((f) =>
-      '<div class="net-wan-row"><div class="net-field-label">' + esc(f.name) + '</div>' +
-      '<div class="net-field-val">' + esc((f.address || '').split('/')[0] || '-') + '</div></div>').join('') + '</div>'
+    ? ifaces.map((f) => '<div class="lan-net"><div class="lan-cidr">' +
+      '<span style="color:var(--text-muted);font-size:.65rem;margin-right:.3rem">WAN:</span>' + esc(f.name) + '</div>' +
+      '<div class="lan-meta">IP: ' + esc((f.address || '').split('/')[0] || '-') + '</div></div>').join('')
     : '<div class="empty-state">' + translate('No WAN interfaces selected or detected', '未选择或检测到 WAN 接口') + '</div>';
 }
 
