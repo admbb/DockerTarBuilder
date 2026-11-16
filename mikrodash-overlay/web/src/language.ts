@@ -1,3 +1,5 @@
+import { extraLabels } from './language-extra';
+
 // Translations are deliberately limited to authored labels, never router data,
 // select options, commands, or values. Add entries as individual UI is audited.
 const labels: Record<string, string> = {
@@ -77,7 +79,7 @@ export function translate(original: string, chinese: string): string {
 
 // Use only with application-authored labels, never with router-supplied values.
 export function translateLabel(original: string): string {
-  return isChinese() ? (labels[original] ?? original) : original;
+  return isChinese() ? (labels[original] ?? extraLabels[original] ?? original) : original;
 }
 
 export function translateField(key: string, fallback: string): string {
@@ -116,6 +118,25 @@ export function initLanguage(): void {
   host.append(switcher);
   if (!isChinese()) return;
   document.documentElement.lang = 'zh-CN';
+  // Translate only the initial, application-authored HTML. Never observe later
+  // router data or translate values inside editors, selects, or terminal output.
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
+  for (const node of textNodes) {
+    const parent = node.parentElement;
+    if (!parent || parent.closest('script, style, pre, code, textarea, select, .terminal, .xterm')) continue;
+    const value = node.data.trim().replace(/\s+/g, ' ');
+    const translated = labels[value] ?? extraLabels[value];
+    if (translated) node.data = node.data.replace(/\S[\s\S]*\S|\S/, translated);
+  }
+  document.querySelectorAll<HTMLElement>('[title], [aria-label], [placeholder]').forEach((element) => {
+    if (element.closest('pre, code, .terminal, .xterm')) return;
+    for (const attr of ['title', 'aria-label', 'placeholder']) {
+      const value = element.getAttribute(attr);
+      if (value && (labels[value] ?? extraLabels[value])) element.setAttribute(attr, labels[value] ?? extraLabels[value] ?? value);
+    }
+  });
   // Only leaf elements in known, static presentation classes are eligible.
   const selector = '.nav-label, h3.card-title, .fw-scard-title, .if-scard-title, .dhcp-card-title, .scard-title, #settingsTabBar > button, #page-apps .stab, #page-apps .tool-card-label, #appsThead th, #page-apps .empty-state';
   document.querySelectorAll<HTMLElement>(selector).forEach((element) => {
