@@ -5,7 +5,8 @@
 import { esc } from '../dom';
 import type { PillTone } from '../palette';
 import { tokenizeRouterOS } from '../markdown';
-import { translate, translateLabel } from '../language';
+import { isChinese, translate, translateLabel } from '../language';
+import { cannedChinese } from '../canned-chinese';
 
 /** One template as the Library shows it: canned or stored, one shape. */
 export interface LibTemplate {
@@ -23,6 +24,12 @@ export interface LibTemplate {
   tags: string[];
   baseline: string | null;
   updatedAt: number;
+}
+
+/** Localise only built-in templates; custom templates remain user data. */
+export function libraryText(t: LibTemplate): { name: string; description: string } {
+  const text = isChinese() && t.canned ? cannedChinese[t.id.replace(/^canned:/, '')] : undefined;
+  return text ? { name: text[0], description: text[1] } : { name: t.name, description: t.description };
 }
 
 export const CATEGORIES: { key: string; label: string }[] = [
@@ -80,6 +87,7 @@ function kindPill(t: LibTemplate): string {
 
 /** One Library card. */
 export function templateCard(t: LibTemplate): string {
+  const display = libraryText(t);
   const scope = t.scope.slice(0, 3).map((m) => '<span class="pill pill-muted">' + esc(m) + '</span>').join('') +
     (t.scope.length > 3 ? '<span class="pill pill-muted">+' + (t.scope.length - 3) + '</span>' : '');
   const lock = t.lockClass
@@ -94,10 +102,10 @@ export function templateCard(t: LibTemplate): string {
   return '<article class="cfg-tpl cfg-cat-' + esc(t.category) + '" data-cfg-id="' + esc(t.id) + '">' +
     '<div class="cfg-tpl-rail"></div>' +
     '<header class="cfg-tpl-head"><span class="cfg-glyph">' + glyph(t.category) + '</span>' +
-    '<div class="cfg-tpl-titles"><h4 class="cfg-tpl-name">' + esc(t.name) + '</h4>' +
+    '<div class="cfg-tpl-titles"><h4 class="cfg-tpl-name">' + esc(display.name) + '</h4>' +
     '<div class="cfg-tpl-pills">' + kindPill(t) + (t.canned ? '<span class="cfg-meta">v' + t.version + '</span>' : '') +
     '</div></div></header>' +
-    '<p class="cfg-tpl-desc">' + esc(t.description || 'No description.') + '</p>' +
+    '<p class="cfg-tpl-desc">' + esc(display.description || translate('No description.', '暂无说明。')) + '</p>' +
     (lock ? '<div class="cfg-tpl-lock">' + lock + '</div>' : '') +
     '<div class="cfg-tpl-scope">' + scope + '</div>' +
     '<footer class="cfg-tpl-foot">' + vars +
@@ -130,7 +138,7 @@ export function generatorCard(): string {
 export function libraryGrid(all: LibTemplate[], category: string, query: string): string {
   const q = query.trim().toLowerCase();
   const shown = all.filter((t) => (category === 'all' || t.category === category) &&
-    (!q || (t.name + ' ' + t.description + ' ' + t.tags.join(' ') + ' ' + t.scope.join(' ')).toLowerCase().includes(q)));
+    (!q || (t.name + ' ' + t.description + ' ' + libraryText(t).name + ' ' + libraryText(t).description + ' ' + t.tags.join(' ') + ' ' + t.scope.join(' ')).toLowerCase().includes(q)));
   const cards = shown.map(templateCard).join('');
   const empty = shown.length ? '' : '<div class="cfg-empty">' +
     (category === 'custom' && !q ? 'No custom templates yet. Customise a canned one, capture one from a router, ' +

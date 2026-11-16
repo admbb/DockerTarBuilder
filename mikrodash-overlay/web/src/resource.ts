@@ -1,0 +1,1486 @@
+// The resource edit form - a port of the resource engine at the foot of app.js,
+// rendering into the #resModal markup lifted verbatim from the live page.
+//
+// The schema is FETCHED, never restated. `res:schema` serves the Go registry
+// over the socket, so the field list, its types and its conditional visibility
+// have exactly one home. That is the registry-over-the-wire pattern the evidence
+// pass singled out as the fix for the client/server mirrors, applied here rather
+// than growing a fourteenth one.
+//
+// Over the SOCKET rather than over HTTP, and that is not a style choice. The
+// reply carries `permitted` - may THIS viewer write THIS router - which depends
+// on the selected router, and an HTTP request does not have one.
+//
+// Nothing this form decides is trusted. `readOnly` arrives from the server and
+// is re-derived there against a fresh read; the values arrive from a fresh read
+// for the same reason. The form's job is to be the shape of the row, not the
+// authority on it.
+
+import { fieldHtml as ffField, toggleHtml } from './form';
+import { esc, el, modalTabs } from './dom';
+import { translateLabel } from './language';
+import type { Socket } from './socket';
+import type { HandEvents, ResSchema, ResSchemaField } from './events-hand';
+
+// The schema, its fields and the undo state are the `res:schema` and
+// `res:history` payloads, typed once in events-hand.ts from the Go that builds
+// them. Local names, one definition. `permitted` on the schema is answered by
+// the SOCKET, not the registry: whether THIS viewer may write THIS router.
+type SchemaField = ResSchemaField;
+type HistState = HandEvents['res:history'];
+type Schema = ResSchema;
+
+const schemas = new Map<string, Schema>();
+// Callers waiting on a schema that has been asked for and not yet answered, so
+// a burst of pages mounting at once produces one request per resource.
+const waiting = new Map<string, Array<(s: Schema) => void>>();
+let sock: Socket | null = null;
+// The undo/redo state per resource, as the server last reported it.
+const hist = new Map<string, HistState>();
+let current: { key: string; id: string | null; identity: string | null } | null = null;
+// What `show` last drew, so Duplicate can redraw the same form as a new row.
+// The OPTIONS are the half that cannot be recovered otherwise: they are the
+// router's own picker lists, fetched with the row, and a duplicate drawn without
+// them would offer a text box where the original offered a list.
+let shown: { schema: Schema; options: Record<string, string[]> } | null = null;
+
+/**
+ * An extra section a page hangs under the dialog's fields.
+ *
+ * ── WHY THE DIALOG HAS A SLOT AND NOT A SECOND FORM ─────────────────────────
+ *
+ * The DNS page's fleet mode needs "and write it to these routers too", and that
+ * belongs on the form where the record is typed rather than in a second form
+ * beside it: the dialog is generated from the resource descriptor and knows
+ * which property each record type puts its value in, and a hand-rolled copy of
+ * that table is a fork of the one fact that matters.
+ *
+ * The dialog itself learns nothing about routers. A page registers a renderer,
+ * gets a div under the fields, and is told what was written once the ACTIVE
+ * router has accepted it.
+ */
+/** What the dialog is showing, for an extra that needs to know. */
+export interface ExtraContext {
+  /** The dialog is read-only: the viewer may look and not write. */
+  readOnly: boolean;
+  /** The row's identity - for an interface, its name. Null on an add form. */
+  identity: string | null;
+  /** The row's RouterOS id. A firewall rule has no name, so this is the only
+   *  handle on it. Null on an add form. */
+  id: string | null;
+}
+
+export interface ResourceExtra {
+  /**
+   * Markup for the slot, or '' to render nothing on this form.
+   *
+   * READ-ONLY IS THE EXTRA'S DECISION, NOT THE DIALOG'S. This slot used to be
+   * skipped outright for a read-only viewer, which is right for an extra that
+   * offers a write (the DNS fleet picker returns '' for exactly that reason)
+   * and wrong for one that only shows something: the Interfaces history panel
+   * is a READ, and refusing it would have hidden a chart from somebody the
+   * server would have answered.
+   */
+  render(mode: 'add' | 'edit', ctx: ExtraContext): string;
+  /**
+   * The form tab to draw in, when the form has tabs: the firewall's traffic
+   * graph belongs on Statistics, beside the counters. Absent, or a tab this
+   * form does not have, and it draws under the fields as before.
+   */
+  tab?: string;
+  /** Wire what `render` just returned. */
+  wire?(): void;
+  /** The active router accepted a write, with these values. */
+  saved?(values: Record<string, string>): void;
+}
+
+const extras = new Map<string, ResourceExtra>();
+
+export function registerExtra(key: string, extra: ResourceExtra): void {
+  extras.set(key, extra);
+}
+
+/** What the last save sent, so `res:ok` can hand it to the extra. Cleared on
+ *  every other path out of the dialog, because a delete answers `res:ok` too. */
+let lastSave: { key: string; values: Record<string, string> } | null = null;
+// The submission to repeat once a warning is acknowledged. A guard answers by
+// refusing the write and describing what it saw, so the retry is the same
+// request plus the fingerprint of the warning that was read.
+let retry: ((ack: string) => void) | null = null;
+let wired = false;
+// Both delegations live on `document`, and four pages mount them. Without these
+// a second page mount would add a second listener and one click would open the
+// form twice.
+let addsWired = false;
+let rowsWired = false;
+
+/**
+ * Ask for a schema once, then serve it from memory.
+ *
+ * OVER THE SOCKET, not over HTTP, and the reason is `permitted`: it depends on
+ * the selected router, and an HTTP request does not have one. The schema was
+ * served from `/next/api/resources/<key>` until that mattered.
+ *
+ * A schema that never arrives leaves its caller pending for ever. That is the
+ * live behaviour - `need()` has no timeout either - and it is the right one
+ * here: the two ways it can fail are a refused read, which the page already
+ * reports through res:error, and a disconnect, which re-asks on reconnect.
+ */
+function schemaFor(key: string): Promise<Schema> {
+  const cached = schemas.get(key);
+  if (cached) return Promise.resolve(cached);
+  return new Promise<Schema>((ok) => {
+    const q = waiting.get(key);
+    if (q) { q.push(ok); return; }        // already asked; just join the queue
+    waiting.set(key, [ok]);
+    sock?.emit('res:schema', { resource: key });
+  });
+}
+
+// One builder for both option paths - a declared select and a router-supplied
+// list render the same control, and two copies would drift.
+function selectHtml(f: SchemaField, id: string, value: unknown, list: string[]): string {
+  const opts = list.slice();
+  const cur = (value === undefined || value === null) ? '' : String(value);
+  if (cur && opts.indexOf(cur) === -1) opts.unshift(cur);
+  return '<select class="sform-input" id="' + id + '">' +
+    (f.required ? '' : '<option value=""></option>') +
+    opts.map((o) =>
+      '<option value="' + esc(o) + '"' + (String(value) === o ? ' selected' : '') + '>' +
+      esc(o) + '</option>').join('') + '</select>';
+}
+
+/**
+ * Is this stored value a switched-ON toggle?
+ *
+ * ── `'false'` IS A STRING AND EVERY STRING IS TRUTHY ────────────────────
+ *
+ * `res:row` fills a form from `resource.RowValues`, which sends a real bool, so
+ * the first render of a row was right. DUPLICATE re-renders from `readValues`,
+ * which sends `String(node.checked)` - and a bare `value ?` turned every OFF
+ * toggle ON. Duplicating a working firewall rule produced a DISABLED one, and a
+ * DNS entry came back with Match Subdomains set; both fields are `Clearable`, so
+ * the wrong value reached the router on Add.
+ */
+export function checkedValue(value: unknown): boolean {
+  return value === true || value === 'true' || value === 'yes';
+}
+
+function fieldHtml(f: SchemaField, value: unknown, choices?: string[]): string {
+  const id = 'resf_' + f.name;
+  const wrap = (control: string, full = false): string => ffField({
+    id, label: f.label, required: f.required, help: f.help, full,
+    attrs: 'data-res-field="' + esc(f.name) + '"',
+  }, control);
+
+  // SHOWN, NEVER SENT. The server skips a display field in every write path, so
+  // it is drawn as a locked box rather than an input that looks like it counts.
+  if (f.display) {
+    const v = value === undefined || value === null ? '' : String(value);
+    return wrap('<input class="sform-input" id="' + id + '" value="' + esc(v) + '" disabled>');
+  }
+
+  if (f.input === 'checkbox') return wrap(toggleHtml(id, checkedValue(value)));
+
+  if (f.input === 'code' || f.input === 'block') {
+    // RouterOS CODE, or a BLOCK of text (a file's contents): multi-line,
+    // monospace, and set as the textarea's content (escaped), never as an
+    // attribute. Writing code is held to the raw-command gate server-side; the
+    // form only has to show either faithfully.
+    const code = value === undefined || value === null ? '' : String(value);
+    return wrap('<textarea class="sform-input ff-code" id="' + id + '" rows="12" spellcheck="false">' +
+      esc(code) + '</textarea>', true);
+  }
+
+  if (f.input === 'multi') {
+    // A set chosen from the declared options, one checkbox each, read back as a
+    // comma list. The value is what is GRANTED; the server writes the rest.
+    const chosen = new Set(String(value ?? '').split(',').map((x) => x.trim()).filter(Boolean));
+    const boxes = (f.options || []).map((o, i) =>
+      '<label><input type="checkbox" id="' + id + '__' + i + '" data-res-multi="' + esc(f.name) + '" value="' + esc(o) + '"' +
+      (chosen.has(o) ? ' checked' : '') + '>' + esc(o) + '</label>').join('');
+    return wrap('<div class="ff-multi" id="' + id + '">' + boxes + '</div>', true);
+  }
+
+  // A NEGATABLE match carries its `!` in the value, as RouterOS spells it. The
+  // form splits it off into the toggle and readValues puts it back, so the box
+  // and the picker only ever hold the thing being matched.
+  const neg = f.negatable ? splitNegation(value) : null;
+  if (neg) value = neg.value;
+  let body: string;
+
+  if (choices && choices.length && f.suggest) {
+    // A list the value is usually from but need not be: a FWD entry forwards
+    // to a named forwarder or to any address.
+    const listId = 'resl_' + f.name;
+    const v = value === undefined || value === null ? '' : String(value);
+    body = '<input class="sform-input" id="' + id + '" type="text" list="' + listId + '"' +
+      ' value="' + esc(v) + '" placeholder="' + esc(f.placeholder || '') + '" autocomplete="off">' +
+      '<datalist id="' + listId + '">' +
+      choices.map((o) => {
+        const name = f.suggestLabels[o];
+        return '<option value="' + esc(o) + '"' + (name ? ' label="' + esc(name) + '"' : '') + '></option>';
+      }).join('') + '</datalist>';
+  } else if (choices && choices.length) {
+    // THE ROUTER TOLD US WHAT THIS FIELD MAY BE, so offer that rather than a
+    // blank box - even for a field whose declared type is free text. That is
+    // what the live form does, and without it the VLAN parent and both
+    // bridge-port fields were text boxes here and pickers there.
+    //
+    // The current value is kept as an option even when the router's list does
+    // not name it, for the same reason the declared-select branch below does
+    // it: a required control with nothing matching falls back to option zero,
+    // and Save then rewrites the record as whatever that happens to be.
+    body = selectHtml(f, id, value, choices);
+  } else if (f.input === 'select') {
+    // The router's value is kept as an option even when our list does not name
+    // it. A required select emits no blank option, so without this nothing
+    // matches, the browser falls back to selectedIndex 0, and Save rewrites the
+    // record as whatever option zero happens to be - silently, and with no sign
+    // on screen that the form was not showing the record. A list declared here
+    // is no more exhaustive than one the router sent.
+    body = selectHtml(f, id, value, f.options || []);
+  } else {
+    let attrs = ' type="' + esc(f.input) + '"';
+    if (f.min !== null && f.min !== undefined) attrs += ' min="' + esc(f.min) + '"';
+    if (f.max !== null && f.max !== undefined && f.input === 'number') attrs += ' max="' + esc(f.max) + '"';
+    // A secret is never filled in: an empty box means "leave it unchanged".
+    const v = f.type === 'secret' ? '' : (value === undefined || value === null ? '' : value);
+    body = '<input class="sform-input" id="' + id + '"' + attrs +
+      ' value="' + esc(v) + '" placeholder="' + esc(f.placeholder || '') + '"' +
+      ' autocomplete="off">';
+  }
+
+  return wrap(neg ? '<div class="res-neg-row">' + negToggle(f, neg.not) + body + '</div>' : body);
+}
+
+/** A negatable value, with RouterOS's leading `!` split off. */
+export function splitNegation(value: unknown): { not: boolean; value: string } {
+  const s = value === undefined || value === null ? '' : String(value);
+  return s.startsWith('!') ? { not: true, value: s.slice(1) } : { not: false, value: s };
+}
+
+/**
+ * The value a negatable field sends: the box's, with the `!` back on when the
+ * toggle is on. A `!` typed into the box as well is not doubled, and an empty
+ * box sends nothing, whatever the toggle says: `!` alone is not a match.
+ */
+export function joinNegation(not: boolean, typed: string): string {
+  const v = typed.trim().replace(/^!+/, '');
+  if (!v) return '';
+  return not ? '!' + v : typed.trim();
+}
+
+function negToggle(f: SchemaField, on: boolean): string {
+  const id = 'resn_' + f.name;
+  return '<button type="button" class="res-neg' + (on ? ' on' : '') + '" id="' + esc(id) + '"' +
+    ' aria-pressed="' + (on ? 'true' : 'false') + '"' +
+    ' title="Not: match everything except this">!</button>';
+}
+
+/**
+ * The value a `showIf` compares against. A CHECKBOX's `.value` is the string
+ * "on" whether it is ticked or not, so a field shown only while a checkbox is on
+ * (a PPPoE client's default-route distance) never appeared; a checkbox answers
+ * with its state, "true" or "false", as the form's own values do.
+ */
+export function showIfValue(ctl: { type?: string; value: string; checked?: boolean }): string {
+  return ctl.type === 'checkbox' ? String(!!ctl.checked) : String(ctl.value);
+}
+
+function applyShowIf(schema: Schema): void {
+  const host = el('res_fields');
+  if (!host) return;
+  for (const f of schema.fields) {
+    if (!f.showIf) continue;
+    const ctl = el<HTMLInputElement | HTMLSelectElement>('resf_' + f.showIf.field);
+    const wrap = host.querySelector<HTMLElement>('[data-res-field="' + f.name + '"]');
+    if (!ctl || !wrap) continue;
+    wrap.style.display = f.showIf.in.indexOf(showIfValue(ctl as HTMLInputElement)) !== -1 ? '' : 'none';
+  }
+}
+
+/**
+ * The form's tabs, in the order its fields first name them. A tab holding
+ * only display fields (the firewall's Statistics) is left off a NEW row, which
+ * has nothing to show there.
+ */
+export function formTabs(fields: SchemaField[], editing: boolean): string[] {
+  const out: string[] = [];
+  for (const f of fields) {
+    if (!f.tab || out.indexOf(f.tab) !== -1) continue;
+    if (!editing && fields.every((g) => g.tab !== f.tab || g.display)) continue;
+    out.push(f.tab);
+  }
+  return out;
+}
+
+/**
+ * How many optional fields on each tab hold a value, shown on the tab.
+ *
+ * A setting made in WinBox on a tab nobody opened was the visibility half of
+ * the request (2026-10-03): the count says it is there. Required fields are
+ * left out, being always set, and so is a field its showIf hides.
+ */
+function countTabs(schema: Schema): void {
+  const host = el('res_fields');
+  if (!host) return;
+  const counts: Record<string, number> = {};
+  const values = readValues(schema);
+  for (const f of schema.fields) {
+    if (!f.tab || f.required || f.display) continue;
+    const wrap = host.querySelector<HTMLElement>('[data-res-field="' + f.name + '"]');
+    if (wrap && wrap.style.display === 'none') continue;
+    const v = values[f.name] ?? '';
+    if (v !== '' && v !== 'false') counts[f.tab] = (counts[f.tab] || 0) + 1;
+  }
+  host.querySelectorAll<HTMLElement>('[data-res-count]').forEach((b) => {
+    const n = counts[b.getAttribute('data-res-count') || ''] || 0;
+    b.textContent = n ? String(n) : '';
+    b.style.display = n ? '' : 'none';
+  });
+}
+
+/**
+ * What a field shows when the form opens: the row's value on Edit, and on Add
+ * RouterOS's own default.
+ *
+ * A checkbox with nothing to read is unticked, and an unticked box is SENT as
+ * `no`: a new DHCP server went out with `conflict-detection=no` and a new adlist
+ * with `ssl-verify=no`, both defaulting to yes on the router. A display field
+ * shows a row's state, and a new row has none.
+ */
+export function initialValue(f: SchemaField, values: Record<string, unknown> | null): unknown {
+  if (values) return values[f.name];
+  return f.default && !f.display ? f.default : undefined;
+}
+
+/** How a field renders differs between Add and Edit; `values` says which. */
+function decorate(f: SchemaField, values: Record<string, unknown> | null): SchemaField {
+  if (values) return f.createOnly ? { ...f, display: true } : f;
+  return f.requiredOnCreate ? { ...f, required: true } : f;
+}
+
+function buildForm(schema: Schema, values: Record<string, unknown> | null,
+                   options?: Record<string, string[]>): void {
+  const host = el('res_fields');
+  if (!host) return;
+  // A CREATE-ONLY field is an input on Add and a locked box on Edit (`values`
+  // is the row being edited, null for a new one): the server does not send it
+  // on an edit, so an input there would look like it counted.
+  //
+  // REQUIRED-ON-CREATE is the mirror of that: a password is required on Add and
+  // optional on Edit, so the asterisk appears only when `values` is null. The
+  // server refuses it either way - this is the label agreeing with the refusal
+  // rather than the operator finding out on save.
+  const draw = (f: SchemaField): string => fieldHtml(decorate(f, values),
+    initialValue(f, values), options ? options[f.name] : undefined);
+  const tabs = formTabs(schema.fields, values !== null);
+  host.innerHTML = tabs.length
+    ? '<div class="modal-tabs" id="res_tabs"><div class="stab-bar" role="tablist">' +
+        tabs.map((t) => '<button type="button" class="stab" role="tab" data-modaltab="' + esc(t) + '">' +
+          esc(t) + '<span class="card-badge active-blue res-tab-count" data-res-count="' + esc(t) + '"></span>' +
+          '</button>').join('') +
+      '</div><div class="modal-panels">' +
+        tabs.map((t) => '<div class="modal-panel res-tab-panel ff-grid" data-modalpanel="' + esc(t) + '">' +
+          schema.fields.filter((f) => f.tab === t).map(draw).join('') + '</div>').join('') +
+      '</div></div>'
+    : '<div class="ff-grid">' + schema.fields.map(draw).join('') + '</div>';
+  if (tabs.length) modalTabs('res_tabs', tabs[0]!);
+  // ASSIGNED, not added: #res_fields outlives every form, and a listener added
+  // per open would count the tabs of every schema it had ever shown.
+  host.oninput = tabs.length ? () => countTabs(schema) : null;
+  host.onchange = tabs.length ? () => countTabs(schema) : null;
+  host.querySelectorAll<HTMLButtonElement>('.res-neg').forEach((b) => {
+    b.addEventListener('click', () => {
+      const on = b.getAttribute('aria-pressed') !== 'true';
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.classList.toggle('on', on);
+      countTabs(schema);
+    });
+  });
+  applyShowIf(schema);
+  countTabs(schema);
+  // A field that controls another's visibility redraws it as it changes - the
+  // DNS type picker is the only one today, but the rule is general.
+  const seen = new Set<string>();
+  for (const f of schema.fields) {
+    if (!f.showIf || seen.has(f.showIf.field)) continue;
+    seen.add(f.showIf.field);
+    el('resf_' + f.showIf.field)?.addEventListener('change', () => applyShowIf(schema));
+  }
+}
+
+function readValues(schema: Schema): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of schema.fields) {
+    if (f.display) continue;
+    const node = el<HTMLInputElement | HTMLSelectElement>('resf_' + f.name);
+    if (!node) continue;
+    if (f.input === 'multi') {
+      out[f.name] = Array.from(node.querySelectorAll<HTMLInputElement>('input[data-res-multi]'))
+        .filter((b) => b.checked).map((b) => b.value).join(',');
+      continue;
+    }
+    if (f.negatable) {
+      out[f.name] = joinNegation(el('resn_' + f.name)?.getAttribute('aria-pressed') === 'true', node.value);
+      continue;
+    }
+    out[f.name] = f.input === 'checkbox'
+      ? String((node as HTMLInputElement).checked)
+      : node.value;
+  }
+  return out;
+}
+
+function setError(msg: string): void {
+  const box = el('res_error');
+  if (!box) return;
+  box.textContent = msg;
+  box.style.display = msg ? '' : 'none';
+}
+
+function close(): void {
+  el('resModal')?.classList.remove('open');
+  const warn = el('res_warn');
+  if (warn) warn.style.display = 'none';
+  current = null;
+  retry = null;
+  lastSave = null;
+}
+
+/**
+ * The self-cutoff prompt.
+ *
+ * Rendered into #res_warn - inside the dialog rather than a window.confirm - so
+ * it can NAME the interface and the address the router sees us from. A warning
+ * that says only "this may be dangerous" is one people learn to click through.
+ *
+ * The acknowledgement is the guard's FINGERPRINT, not a boolean: it binds the
+ * answer to the exact inputs it was asked about, so it cannot be carried to
+ * another row or replayed against a later write. A `stale-warning` means the
+ * ground moved between the prompt and the answer.
+ */
+/**
+ * What a guard warning says, by the guard's CODE. Every guard that warns reaches
+ * this prompt now: only self-cutoff did, so a firewall lockout, an inherited Wi-Fi
+ * setting or a CAPsMAN push was shown as a plain refusal nobody could acknowledge.
+ */
+export function warningText(code: string, w: Record<string, unknown>): { headline: string; why: string } {
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const cut = 'This may cut MikroDash off from this router.';
+  switch (code) {
+    case 'self-cutoff':
+      return {
+        headline: cut,
+        why: 'The router sees MikroDash at <code>' + esc(str(w.address) || '?') +
+          '</code>, which arrives on <code>' + esc(str(w.interface) || '?') + '</code>, the interface this ' +
+          'change ' + (str(w.action) === 'delete' ? 'removes' : 'alters') + '.',
+      };
+    case 'route-cutoff': {
+      const verb = str(w.action) === 'delete' ? 'removes' : str(w.action) === 'create' ? 'adds' : 'changes';
+      return {
+        headline: cut,
+        why: 'The router sees MikroDash at <code>' + esc(str(w.address) || '?') +
+          '</code>, an address it reaches through a route, and this change ' + verb +
+          ' the route <code>' + esc(str(w.destination) || '?') + '</code> that covers it.',
+      };
+    }
+    case 'route-cutoff-unknown':
+      return {
+        headline: cut,
+        why: 'MikroDash could not read where the router sees it connecting from, so it cannot tell ' +
+          'whether changing the route <code>' + esc(str(w.destination) || '?') + '</code> cuts its own connection.',
+      };
+    case 'rule-cutoff': {
+      const verb = str(w.action) === 'delete' ? 'removes' : str(w.action) === 'create' ? 'adds' : 'changes';
+      const where = str(w.ruleAction) === 'drop' || str(w.ruleAction) === 'unreachable'
+        ? 'answers <code>' + esc(str(w.ruleAction)) + '</code>'
+        : 'looks the route up in table <code>' + esc(str(w.table) || '?') + '</code>';
+      return {
+        headline: cut,
+        why: 'The router sees MikroDash at <code>' + esc(str(w.address) || '?') + '</code>, and this change ' +
+          verb + ' a routing rule for <code>' + esc(str(w.destination) || '?') + '</code> that ' + where +
+          ' before the main table is consulted, which can send the router\'s replies somewhere they never arrive.',
+      };
+    }
+    case 'ipsec-cutoff': {
+      const verb = str(w.action) === 'delete' ? 'removes' : str(w.action) === 'create' ? 'adds' : 'changes';
+      return {
+        headline: cut,
+        why: 'The router sees MikroDash at <code>' + esc(str(w.address) || '?') + '</code>, and this change ' + verb +
+          ' an IPsec policy for <code>' + esc(str(w.destination) || '?') + '</code> that would <code>' +
+          esc(str(w.ipsecAction) || '?') + '</code> the router\'s replies to it, or that MikroDash arrives through.',
+      };
+    }
+    case 'ipsec-cutoff-unknown':
+      return {
+        headline: cut,
+        why: 'MikroDash could not read where the router sees it connecting from, so it cannot tell whether this ' +
+          'IPsec policy for <code>' + esc(str(w.destination) || '?') + '</code> carries its own connection.',
+      };
+    case 'ipsec-peer-cutoff': {
+      const verb = str(w.action) === 'delete' ? 'removes' : 'changes';
+      return {
+        headline: cut,
+        why: 'The router sees MikroDash at <code>' + esc(str(w.address) || '?') + '</code>, inside a policy that ' +
+          'encrypts through peer <code>' + esc(str(w.peer) || '?') + '</code>, and this change ' + verb +
+          ' that peer or its identity, which can drop the tunnel MikroDash arrives over.',
+      };
+    }
+    case 'ipsec-peer-cutoff-unknown':
+      return {
+        headline: cut,
+        why: 'MikroDash could not read where the router sees it connecting from, so it cannot tell whether peer <code>' +
+          esc(str(w.peer) || '?') + '</code> carries its own connection.',
+      };
+    case 'dhcp-client-cutoff': {
+      const verb = str(w.action) === 'delete' ? 'removes' : 'changes';
+      return {
+        headline: cut,
+        why: 'MikroDash reaches this router at <code>' + esc(str(w.address) || '?') + '</code>, the address the DHCP ' +
+          'client on <code>' + esc(str(w.interface) || '?') + '</code> holds, and this change ' + verb +
+          ' that client, which takes the address away.',
+      };
+    }
+    case 'rule-cutoff-unknown':
+      return {
+        headline: cut,
+        why: 'MikroDash could not read where the router sees it connecting from, so it cannot tell whether ' +
+          'this routing rule for <code>' + esc(str(w.destination) || '?') + '</code> reroutes its own connection.',
+      };
+    case 'address-cutoff': {
+      const verb = str(w.action) === 'delete' ? 'removes' : 'changes';
+      return {
+        headline: cut,
+        why: 'The router sees MikroDash at <code>' + esc(str(w.address) || '?') +
+          '</code>, on the subnet of <code>' + esc(str(w.prefix) || '?') + '</code>' +
+          (str(w.interface) ? ' on <code>' + esc(str(w.interface)) + '</code>' : '') +
+          ', and this change ' + verb + ' that address.',
+      };
+    }
+    case 'address-cutoff-unknown':
+      return {
+        headline: cut,
+        why: 'MikroDash could not read where the router sees it connecting from, so it cannot tell ' +
+          'whether changing the address <code>' + esc(str(w.prefix) || '?') + '</code> cuts its own connection.',
+      };
+    case 'list-cutoff': {
+      // The RULE is untouched; who is IN the list moved, and the rule's verdict on
+      // MikroDash's own traffic moved with it. An interface-list member IS the
+      // interface MikroDash arrives on; an address-list entry COVERS its address.
+      const v = '<code>' + esc(str(w.value) || '?') + '</code>';
+      const who = str(w.kind) === 'interface'
+        ? 'the interface MikroDash arrives on, ' + v + ','
+        : v + ', which covers the address the router sees MikroDash at,';
+      return {
+        headline: cut,
+        why: 'This ' + (str(w.move) === 'joins' ? 'puts ' : 'takes ') + who + ' ' +
+          (str(w.move) === 'joins' ? 'into' : 'out of') + ' the list <code>' + esc(str(w.list) || '?') +
+          '</code>, and the input rule matching <code>' + esc(str(w.ruleMatch) || '?') + '</code> would then ' +
+          (str(w.effect) === 'loses-accept' ? 'stop accepting' : 'drop') + ' its traffic.',
+      };
+    }
+    case 'list-redefine': {
+      const verb = str(w.change) === 'delete' ? 'deletes' : str(w.change) === 'rename' ? 'renames' : 'changes what is in';
+      return {
+        headline: cut,
+        why: 'This ' + verb + ' the list <code>' + esc(str(w.list) || '?') + '</code>, which the input rule matching <code>' +
+          esc(str(w.ruleMatch) || '?') + '</code> uses to decide on MikroDash\'s own traffic.',
+      };
+    }
+    case 'self-lockout': {
+      // The matches the check could not evaluate, assumed to match. Named so
+      // the operator can see why a rule scoped to an address list or a time
+      // window still warns, and judge whether it reaches MikroDash at all.
+      const other = Array.isArray(w.unmodelled) ? w.unmodelled.filter((x): x is string => typeof x === 'string') : [];
+      return {
+        headline: cut,
+        why: 'This firewall rule could match MikroDash\'s own traffic to the router.' +
+          (other.length ? ' It also matches on <code>' + other.map(esc).join('</code>, <code>') +
+            '</code>, which this check cannot evaluate, so it may not apply to MikroDash at all.' : ''),
+      };
+    }
+    case 'self-throttle': {
+      // The cap arrives as the guard's {up, down} pair of raw bits per second,
+      // null for a half that is not set.
+      const cap = w.maxLimit && typeof w.maxLimit === 'object' ? w.maxLimit as Record<string, unknown> : {};
+      const rate = (v: unknown): string => {
+        if (typeof v !== 'number') return '?';
+        if (v === 0) return 'unlimited';
+        if (v >= 1e9 && v % 1e9 === 0) return (v / 1e9) + 'G';
+        if (v >= 1e6 && v % 1e6 === 0) return (v / 1e6) + 'M';
+        if (v >= 1e3 && v % 1e3 === 0) return (v / 1e3) + 'k';
+        return String(v);
+      };
+      return {
+        headline: 'This queue covers MikroDash\'s own connection to this router.',
+        why: 'The router sees MikroDash at <code>' + esc(str(w.address) || '?') + '</code>, inside <code>' +
+          esc(str(w.target) || '?') + '</code>, and this queue caps it at <code>' +
+          esc(rate(cap.up) + '/' + rate(cap.down)) + '</code>. The dashboard may become slow; the queue ' +
+          'can still be edited or removed from its row.',
+      };
+    }
+    case 'table-in-use': {
+      // Measured on the CHR (7.24.1): a removed or disabled table leaves its
+      // rules inactive; a table without FIB leaves them looking in an empty one.
+      const n = Number(w.rules) || 0;
+      const them = n === 1 ? 'it' : 'them';
+      const what = str(w.change) === 'remove' ? 'Removing the table makes ' + them + ' inactive, as if ' +
+          (n === 1 ? 'it were' : 'they were') + ' not there.'
+        : str(w.change) === 'disable' ? 'Disabling the table makes ' + them + ' inactive, as if ' +
+          (n === 1 ? 'it were' : 'they were') + ' not there.'
+          : 'Without FIB the table\'s routes are not installed, so ' + (n === 1 ? 'its' : 'their') +
+            ' lookups find nothing.';
+      return {
+        headline: 'Routing rules use this table.',
+        why: (n === 1 ? 'A routing rule looks' : n + ' routing rules look') + ' routes up in <code>' +
+          esc(str(w.table) || '?') + '</code>. ' + what,
+      };
+    }
+    case 'wifi-inherit':
+      return { headline: 'This change needs confirming.', why: 'It overrides a setting this network inherits from a shared configuration profile.' };
+    case 'capsman-push':
+      return { headline: 'This change needs confirming.', why: 'This profile is provisioned to managed access points, so the change will be pushed to them.' };
+    default:
+      return { headline: 'This change needs confirming.', why: 'A safety check flagged it (<code>' + esc(code || '?') + '</code>).' };
+  }
+}
+
+/**
+ * The sentence for a write a guard REFUSED. Unlike a warning there is nothing to
+ * acknowledge: these are the lockout rules for the account MikroDash signs in
+ * with, where a mistake is only recoverable from WinBox.
+ */
+export function guardRefusedText(rule: unknown): string {
+  switch (rule) {
+    case 'protected-account': return 'That is the account MikroDash signs in with. Manage it in WinBox.';
+    case 'protected-group': return 'That is the group MikroDash signs in with. Manage it in WinBox.';
+    case 'protected-name-value': return 'That name belongs to the account MikroDash signs in with.';
+    case 'protected-group-value': return 'Users cannot be placed in, or edited while in, the group MikroDash signs in with.';
+    case 'self-unresolved': return 'MikroDash cannot identify its own account on this router, so changes are refused.';
+    case 'service-disable': return 'That is the API service MikroDash connects through. Disabling it would cut MikroDash off; change it in WinBox.';
+    case 'service-port': return 'That is the API service MikroDash connects through. Moving its port would cut MikroDash off; change it in WinBox.';
+    case 'service-vrf': return 'That is the API service MikroDash connects through. Moving it to another VRF would cut MikroDash off; change it in WinBox.';
+    case 'service-address': return 'That address list would not admit the address the router sees MikroDash connecting from.';
+    case 'code-requires-admin': return 'Changing or running RouterOS code is limited to global administrators, as raw commands are.';
+    case 'certificate-in-use': return 'That is the certificate the API service MikroDash connects through presents. Removing it would cut MikroDash off; change it in WinBox.';
+    case 'certificate-unknown': return 'MikroDash cannot read which certificate its API service presents, so removing certificates is refused.';
+    case 'service-address-unknown': return 'MikroDash cannot read where the router sees it connecting from, so it cannot show that address list would still admit it.';
+    case 'file-runs': return 'A file named *.auto.* runs on the router as it lands, so it is not created here.';
+    case 'file-installs': return 'A .npk package is installed at the next reboot. Use the Packages page for that.';
+    case 'file-path': return 'A file name may not start with / or climb out with ..';
+    default: return 'A safety rule refused this change.';
+  }
+}
+
+/** The guard code a prompt was first raised with; a stale-warning keeps it. */
+let warnCode = '';
+
+function showWarning(d: HandEvents['res:error']): void {
+  const box = el('res_warn');
+  if (!box) return;
+  // The guard's detail arrives as the raw map it built (guard.Verdict.Detail),
+  // so its keys are read by type rather than trusted. For the self-cutoff guard
+  // they are all strings, and this renders exactly as before.
+  const w = d.warning ?? {};
+  if (d.code && d.code !== 'stale-warning') warnCode = d.code;
+  const { headline, why } = warningText(warnCode, w);
+  box.innerHTML =
+    '<strong>' + headline + '</strong><br>' + why +
+    (d.code === 'stale-warning'
+      ? '<br><em>The values changed since you were asked, so please confirm again.</em>' : '') +
+    '<div style="display:flex;gap:.4rem;justify-content:flex-end;margin-top:.5rem">' +
+    '<button class="sbtn sbtn-outline is-sm" id="res_warnCancel">Cancel</button>' +
+    '<button class="sbtn sbtn-danger is-sm" id="res_warnGo">Do it anyway</button></div>';
+  box.style.display = '';
+
+  const ack = d.fingerprint || '';
+  const again = retry;
+  el('res_warnCancel')?.addEventListener('click', () => {
+    box.style.display = 'none';
+    retry = null;
+  });
+  el('res_warnGo')?.addEventListener('click', () => {
+    box.style.display = 'none';
+    again?.(ack);
+  });
+}
+
+/**
+ * `actions` are the verbs a read-only row still offers.
+ *
+ * A dynamic DHCP lease is the case this exists for: it cannot be edited, because
+ * it belongs to the server rather than to us, and the only useful thing to do
+ * with it is make it static. Refusing to open the form would make that verb
+ * unreachable - which is why the bar is drawn even when Save is hidden.
+ */
+function actionBar(schema: Schema, avail: string[]): void {
+  const host = el('res_actions');
+  if (!host) return;
+  host.innerHTML = (avail || []).map((k) => {
+    const a = (schema.actions || []).find((x) => x.key === k);
+    // DISABLE IS ORANGE, so it cannot be mistaken for the blue Save beside it
+    // (operator, 2026-10-03): it takes something out of service.
+    const tone = a && a.key === 'disable' ? 'sbtn-warn' : 'sbtn-primary';
+    return a ? '<button class="sbtn ' + tone + '" data-res-actionbtn="' + esc(a.key) + '">' +
+      esc(a.label) + '</button>' : '';
+  }).join(' ');
+}
+
+function show(schema: Schema, values: Record<string, unknown> | null,
+              row: { id: string; identity: string } | null, readOnly: boolean,
+              options?: Record<string, string[]>, actions?: string[],
+              removable?: boolean): void {
+  current = { key: schema.key, id: row ? row.id : null, identity: row ? row.identity : null };
+  shown = { schema, options: options || {} };
+  const title = el('res_title');
+  if (title) title.textContent = (readOnly ? '' : row ? 'Edit ' : 'Add ') + schema.title;
+  buildForm(schema, values, options);
+  actionBar(schema, actions || []);
+  lastSave = null;
+  const slot = el('res_extra');
+  if (slot) {
+    const extra = extras.get(schema.key);
+    const html = extra
+      ? extra.render(row ? 'edit' : 'add',
+        { readOnly, identity: row ? row.identity : null, id: row ? row.id : null })
+      : '';
+    const panel = extra && extra.tab
+      ? el('res_fields')?.querySelector<HTMLElement>('[data-modalpanel="' + extra.tab + '"]')
+      : null;
+    if (panel && html) {
+      // A div spanning both columns of the tab's grid, after its fields.
+      const box = document.createElement('div');
+      box.className = 'res-tab-extra';
+      box.innerHTML = html;
+      panel.appendChild(box);
+      slot.innerHTML = '';
+      slot.style.display = 'none';
+    } else {
+      slot.innerHTML = html;
+      slot.style.display = html ? '' : 'none';
+    }
+    if (html) extra!.wire?.();
+  }
+  // FROZEN is read-only for editing but not for deleting: an existing row of a
+  // resource that can be viewed and removed and nothing else (/file).
+  const frozen = readOnly || (!!row && schema.editable === false);
+  if (frozen) {
+    // Shown, not hidden: the operator clicked the row to see it, and the values
+    // are the answer to that even when they cannot be changed.
+    el('res_fields')?.querySelectorAll<HTMLInputElement>('input,select,textarea')
+      .forEach((n) => { n.disabled = true; });
+  }
+  setError('');
+  const warn = el('res_warn'); if (warn) warn.style.display = 'none';
+  const prev = el('res_preview'); if (prev) prev.style.display = 'none';
+  const del = el('res_delete'); if (del) del.style.display = (row && !readOnly && removable !== false) ? '' : 'none';
+  // Duplicate is offered on the same rows Delete is: an existing row somebody
+  // may write to. On a new form it would copy a blank, and on a read-only one it
+  // would offer a write the server refuses.
+  // And never on a resource that cannot be created: the copy could only be refused.
+  const dup = el('res_dup'); if (dup) dup.style.display = (row && !frozen && schema.creatable !== false) ? '' : 'none';
+  const save = el('res_save');
+  if (save) {
+    save.style.display = frozen ? 'none' : '';
+    save.textContent = row ? 'Save' : 'Add ' + schema.label;
+  }
+  // THE PREVIEW BUTTON, shown on a writable form and hidden on a read-only one.
+  //
+  // This was `display = 'none'` unconditionally until 2026-08-25 - which is the
+  // live app's READ-ONLY branch (app.js:14716) applied to every form; almost
+  // certainly the wrong one of its two lines was ported. The writable branch is
+  // `app.js:14657`, `ro ? 'none' : ''`. A user-visible control was missing from
+  // every resource page as a result, found by `inbound-audit` noticing that the
+  // live app answers `res:preview` and ws.go did not.
+  const pbtn = el('res_previewBtn'); if (pbtn) pbtn.style.display = frozen ? 'none' : '';
+  el('resModal')?.classList.add('open');
+}
+
+/**
+ * Fill every `[data-res-add]` slot on the page with its Add button(s).
+ *
+ * ONE implementation, because three pages had grown three: the labels had
+ * drifted to "Add Bridge"/"Add Port"/"Add VLAN" where the live app renders
+ * "+ Add Bridge"/"+ Add Bridge Port"/"+ Add VLAN", and the padding with them.
+ * The label is taken from the fetched schema rather than written here, so the
+ * text has the same single home the field list does and cannot drift again.
+ *
+ * A slot names one or more resources - routing's is `route,route6` - and
+ * renders one button each, in the order the slot lists them.
+ *
+ * KNOWN GAP, deliberately not papered over: the live slot also gates each
+ * button on `schema.permitted` and precedes them with the undo/redo pair from
+ * `res:history`. This port serves schemas over HTTP, where the selected router
+ * - which `permitted` depends on - is not known, and has not ported
+ * `res:history` at all. So a viewer with read-only access sees Add buttons that
+ * the server then refuses, and nobody sees undo/redo. Tracked during the port;
+ * it is the same on every ported page and is not introduced here.
+ */
+function histButton(kind: 'undo' | 'redo', key: string, on: boolean, label: string): string {
+  const glyph = kind === 'undo' ? '↶' : '↷';
+  const title = on
+    ? (kind === 'undo' ? 'Undo ' : 'Redo ') + label
+    : 'Nothing to ' + kind;
+  return '<button class="sbtn ' + (on ? 'sbtn-primary' : 'sbtn-ghost') + ' is-sm res-hist"' +
+    ' data-res-hist="' + kind + '" data-res-histkey="' + esc(key) + '"' +
+    (on ? '' : ' disabled') +
+    ' title="' + esc(title) + '">' + glyph + '</button>';
+}
+
+/**
+ * One undo/redo pair per SLOT, not per resource.
+ *
+ * A slot naming several resources - `route,route6` - gets one pair, pointed at
+ * whichever of them has something to undo. Falls back to the first, so the
+ * buttons are present and grey rather than absent: a control that appears only
+ * once it is usable teaches nobody it exists.
+ */
+function histTarget(ready: Schema[]): string {
+  for (const s of ready) {
+    const h = hist.get(s.key);
+    if (h && (h.canUndo || h.canRedo)) return s.key;
+  }
+  return ready[0]?.key ?? '';
+}
+
+/**
+ * The row a reorder is about, held between the click and any acknowledgement.
+ *
+ * A move is a WRITE, so a guard can refuse it and ask for confirmation - and the
+ * answer has to reach the SAME request rather than a new one. That is what
+ * `retry` is for, and it is why the request is held here rather than rebuilt
+ * from the DOM: by the time an operator answers the prompt the table may have
+ * re-rendered underneath them.
+ */
+let pendingMove:
+  { resource: string; id: string; expectedIdentity?: string; direction?: string; anchor?: string }
+  | null = null;
+
+function doMove(ack: string): void {
+  if (!pendingMove) return;
+  retry = doMove;
+  sock?.emit('res:move', ack ? { ...pendingMove, ack } : { ...pendingMove });
+}
+
+// ── Drag to reorder ─────────────────────────────────────────────────────────
+//
+// POINTER EVENTS, not HTML5 drag-and-drop - the choice the live app made, and
+// the one that works on touch.
+//
+// The dragged row is moved in the DOM as the pointer travels, so the table shows
+// the OUTCOME rather than a floating ghost. That also makes the answer trivial to
+// read at the end: whatever row now follows it is the anchor. If the server
+// refuses, the next payload re-renders the truth.
+
+interface DragState {
+  host: HTMLElement;
+  row: HTMLElement;
+  key: string;
+  raf: number;
+  x: number;
+  y: number;
+  marker: HTMLElement | null;
+}
+let drag: DragState | null = null;
+
+/**
+ * Where the pointer is, in ONE lookup.
+ *
+ * Measuring every row per pointermove is thirty `getBoundingClientRect` calls on
+ * a table of thirty rules, each forced to flush a layout the previous
+ * `insertBefore` had just invalidated. `elementFromPoint` asks the browser once.
+ *
+ * The origin gap counts as a target: without it, hovering the hole is a dead
+ * spot and putting a rule back where it came from means aiming at its
+ * neighbours.
+ */
+function rowUnder(host: HTMLElement, x: number, y: number): HTMLElement | null {
+  const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+  const row = hit?.closest?.('tr[data-id], tr.res-drag-origin') as HTMLElement | null;
+  return row && host.contains(row) ? row : null;
+}
+
+/**
+ * A stand-in left in the slot the row is leaving.
+ *
+ * Created on the FIRST MOVE, not at pointerdown: inserting it up front pushes
+ * everything below down a row before the drag has gone anywhere. Made on the
+ * first move, the row vacates its slot as the marker fills it and nothing jumps.
+ *
+ * The height is measured off the row rather than guessed in CSS, because rules
+ * wrap to different heights and a gap that is not the size of the hole shifts
+ * every row beneath it.
+ */
+function makeOriginMarker(row: HTMLElement): HTMLElement {
+  const tr = document.createElement('tr');
+  tr.className = 'res-drag-origin';
+  const td = document.createElement('td');
+  td.colSpan = row.children.length || 1;
+  td.style.height = row.getBoundingClientRect().height + 'px';
+  tr.appendChild(td);
+  return tr;
+}
+
+/**
+ * Show the gap only while the row is actually elsewhere.
+ *
+ * A row cannot be moved INSIDE its own marker - the DOM offers only before and
+ * after - so dragging back leaves the rule beside the gap with the slot still
+ * looking empty, and it never reads as "dropped back where it was". Collapsing
+ * the marker whenever the row immediately follows it makes the table look
+ * exactly as it did before the drag started.
+ */
+function syncOriginMarker(): void {
+  if (!drag || !drag.marker) return;
+  drag.marker.classList.toggle('is-home', drag.marker.nextElementSibling === drag.row);
+}
+
+/**
+ * Move the dragged row to wherever the pointer now is.
+ *
+ * It swaps on the FIRST OVERLAP with a neighbour rather than waiting for the
+ * pointer to cross that row's midpoint - waiting means travelling a whole
+ * row-height before anything happens, which reads as lag.
+ *
+ * That cannot oscillate: after the swap the dragged row is under the cursor
+ * again, so the next lookup finds the dragged row and does nothing until the
+ * pointer moves on.
+ */
+export function dragTo(x: number, y: number): void {
+  if (!drag) return;
+  // The row was re-rendered out from under us - a tab switch, a router switch,
+  // anything that rebuilds the table. Re-inserting the detached node would put a
+  // SECOND copy of it beside its replacement, so the drag ends here instead.
+  if (!drag.host.contains(drag.row)) { endDrag(); return; }
+  const over = rowUnder(drag.host, x, y);
+  if (!over || over === drag.row) return;
+
+  // Mark the slot being left, once, before the row actually moves out of it.
+  if (!drag.marker) {
+    drag.marker = makeOriginMarker(drag.row);
+    drag.row.parentNode?.insertBefore(drag.marker, drag.row);
+  }
+
+  if (over === drag.marker) {
+    // Back over the gap: immediately after it IS the original slot once the gap
+    // collapses. Settles rather than oscillating - once home the marker hides,
+    // so the next lookup finds the row itself.
+    drag.host.insertBefore(drag.row, drag.marker.nextSibling);
+  } else {
+    const above = drag.row.compareDocumentPosition(over) & Node.DOCUMENT_POSITION_PRECEDING;
+    drag.host.insertBefore(drag.row, above ? over : over.nextSibling);
+  }
+  syncOriginMarker();
+}
+
+export function endDrag(): DragState | null {
+  if (!drag) return null;
+  const d = drag;
+  drag = null;
+  if (d.raf) cancelAnimationFrame(d.raf);
+  // The gap closes however the drag ended - dropped elsewhere, dropped back, or
+  // cancelled. Removed BEFORE the caller walks siblings for the anchor, so it can
+  // never be mistaken for a neighbour.
+  d.marker?.parentNode?.removeChild(d.marker);
+  d.marker = null;
+  d.row.classList.remove('res-dragging');
+  document.body.classList.remove('res-dragging-body');
+  return d;
+}
+
+/** The row a drop lands before, or '' for the end of the table. */
+export function anchorAfter(row: HTMLElement): string {
+  let next = row.nextElementSibling;
+  while (next && !next.getAttribute('data-id')) next = next.nextElementSibling;
+  // '' rather than undefined for the end of the table: the server tells the two
+  // apart by whether the key is PRESENT, not by whether it is empty. See
+  // HasAnchor in internal/server/resource.go.
+  return next ? (next.getAttribute('data-id') || '') : '';
+}
+
+function wireDrag(): void {
+  document.addEventListener('pointerdown', (e) => {
+    const t = e.target as HTMLElement;
+    if (!t?.closest) return;
+    const h = t.closest('[data-res-drag]') as HTMLElement | null;
+    if (!h) return;
+    const row = h.closest('[data-id]') as HTMLElement | null;
+    const host = h.closest('[data-res-rows]') as HTMLElement | null;
+    if (!row || !host) return;
+    const key = row.getAttribute('data-res') || host.getAttribute('data-res-rows') || '';
+    const schema = schemas.get(key);
+    if (!schema || !schema.permitted) return;
+
+    e.preventDefault();
+    drag = { host, row, key, raf: 0, x: e.clientX, y: e.clientY, marker: null };
+    row.classList.add('res-dragging');
+    // Stops the pointer painting a text selection across the table as it travels.
+    document.body.classList.add('res-dragging-body');
+    try { h.setPointerCapture(e.pointerId); } catch { /* not fatal */ }
+  });
+
+  document.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    drag.x = e.clientX;
+    drag.y = e.clientY;
+    // Pointer events fire faster than the screen redraws, and every one of them
+    // would otherwise reorder the DOM. Coalesced to one update per frame.
+    if (drag.raf) return;
+    drag.raf = requestAnimationFrame(() => {
+      if (!drag) return;
+      drag.raf = 0;
+      dragTo(drag.x, drag.y);
+    });
+  });
+
+  document.addEventListener('pointercancel', () => { endDrag(); });
+
+  document.addEventListener('pointerup', () => {
+    if (!drag) return;
+    // One last placement at the exact release point, in case the pointer moved
+    // after the previous frame. It can end the drag, if the row went away.
+    dragTo(drag.x, drag.y);
+    const d = endDrag();
+    if (!d || !d.host.contains(d.row)) return;
+    pendingMove = {
+      resource: d.key,
+      id: d.row.getAttribute('data-id') || '',
+      expectedIdentity: d.row.getAttribute('data-identity') || undefined,
+      anchor: anchorAfter(d.row),
+    };
+    doMove('');
+  });
+}
+
+function doHist(kind: string, key: string, ack: string): void {
+  if (!kind || !key) return;
+  // An undo is a write, so a guard can refuse it and ask for an acknowledgement
+  // - the same retry hook the form uses, because the answer has to reach the
+  // same request rather than a new one.
+  retry = (a: string) => doHist(kind, key, a);
+  sock?.emit('res:' + kind, ack ? { resource: key, ack } : { resource: key });
+}
+
+// Whether a router has been selected on this connection. Schemas are per router
+// and the server answers `unavailable` until one is, so nothing asks for one
+// before `router:switched`. See refreshAll.
+let routerSelected = false;
+
+function mountAddSlots(): void {
+  document.querySelectorAll('[data-res-add]').forEach((host) => {
+    const keys = (host.getAttribute('data-res-add') || '')
+      .split(',').map((k) => k.trim()).filter(Boolean);
+    // Drawn from what has ARRIVED, never from a promise: this runs again on
+    // every res:schema, so a slot naming two resources fills in as each answers
+    // instead of waiting for both. An empty slot is laid out away entirely by
+    // CSS, so a viewer who may not write gets back exactly the header they had.
+    const ready = keys.map((k) => schemas.get(k))
+      .filter((s): s is Schema => !!s && s.permitted);
+    const target = ready.length ? histTarget(ready) : '';
+    const h = (target && hist.get(target)) || null;
+    host.innerHTML = (target
+      ? histButton('undo', target, !!h?.canUndo, h?.undoLabel || '') +
+        histButton('redo', target, !!h?.canRedo, h?.redoLabel || '')
+      : '') +
+      // NO ADD FOR A RESOURCE THAT CANNOT BE CREATED. A hand-built page simply
+      // has no slot for one, so this never came up until the generated pages,
+      // whose shell always has a slot: Certificates and IP Services offered an
+      // Add the server would refuse (found on the CHR, 2026-09-18). Undo and redo
+      // still belong: those rows can be edited.
+      ready.filter((s) => s.creatable !== false).map((s) =>
+      '<button class="sbtn sbtn-primary is-sm" data-res-addbtn="' + esc(s.key) + '">' +
+      esc(translateLabel('+ Add ' + s.label)) +
+      '</button>').join('');
+  });
+}
+
+export function mountAdds(socket: Socket): void {
+  sock = socket;
+  wire(socket);
+  // Pages mount before any router is selected, and a schema asked for then is
+  // refused: `refreshAll` asks for every slot when `router:switched` arrives.
+  if (routerSelected) {
+    document.querySelectorAll('[data-res-add]').forEach((host) => {
+      (host.getAttribute('data-res-add') || '').split(',')
+        .forEach((k) => { const key = k.trim(); if (key) schemaFor(key); });
+    });
+  }
+  mountAddSlots();
+  if (addsWired) return;
+  addsWired = true;
+  document.addEventListener('click', (ev) => {
+    const target = ev.target as HTMLElement;
+    if (!target.closest) return;
+    const hb = target.closest('[data-res-hist]');
+    if (hb) {
+      if ((hb as HTMLButtonElement).disabled) return;
+      doHist(hb.getAttribute('data-res-hist') || '',
+             hb.getAttribute('data-res-histkey') || '', '');
+      return;
+    }
+    const act = target.closest('[data-res-actionbtn]');
+    if (act && current) {
+      const key = act.getAttribute('data-res-actionbtn') || '';
+      const send = (ack: string): void => {
+        socket.emit('res:action', {
+          resource: current!.key, action: key,
+          id: current!.id || undefined,
+          expectedIdentity: current!.identity || undefined,
+          ack: ack || undefined,
+        });
+      };
+      // A guard can refuse an action exactly as it refuses a save, so the retry
+      // hook is the same one the form uses.
+      retry = send;
+      send('');
+      return;
+    }
+    const btn = target.closest('[data-res-addbtn]');
+    if (!btn) return;
+    openResource(socket, btn.getAttribute('data-res-addbtn') || '', null);
+  });
+}
+
+/**
+ * Open the edit form when a row inside a `[data-res-rows]` table is clicked.
+ *
+ * A ROW-LEVEL `data-res` WINS over the table's. The Routes table holds both
+ * address families in one tbody declared `data-res-rows="route"`, and a v6 row
+ * overrides itself to `route6` - the family is what decides which RouterOS menu
+ * the edit goes to, and editing an IPv6 route through /ip/route would fail at
+ * the router with nothing on screen explaining why.
+ *
+ * The identity is round-tripped from `data-identity` rather than looked up in
+ * the payload: the server refuses the write if the row no longer carries it,
+ * and a `.id` survives a rename, so it addresses a row without identifying it.
+ *
+ * The earlier ported pages each grew their own version of this that looks the
+ * row up in the page payload instead; they still work and are covered by the
+ * DOM gate, but they are three copies of one thing. Consolidating them is a
+ * queue item, not a change to make in passing.
+ */
+export function mountRows(socket: Socket): void {
+  sock = socket;
+  wire(socket);
+  if (rowsWired) return;
+  rowsWired = true;
+  wireDrag();
+  document.addEventListener('click', (ev) => {
+    const target = ev.target as HTMLElement;
+    if (!target.closest) return;
+    // Reordering, and it lives HERE rather than beside the other buttons.
+    //
+    // The live app has ONE delegated click handler, so its move branch simply
+    // returns before the row-open code below it. This port has TWO listeners -
+    // `mountAdds` owns the history and action buttons, `mountRows` owns opening
+    // a row - and a `return` in one does not stop the other from running. An
+    // arrow sits inside `[data-id]`, so putting this branch in the other
+    // listener emitted the move AND opened the edit dialog on the same click.
+    //
+    // Same ordering as the original, in the listener where the ordering is what
+    // does the work.
+    //
+    // Rendered by firewall.ts and capsman.ts, which name the attribute
+    // `data-res-move` rather than anything page-specific precisely so this
+    // engine owns the behaviour. Until now nothing here read it, so both pages
+    // drew working-looking arrows that did nothing - on Firewall, where rule
+    // ORDER decides what the rule does.
+    const mv = target.closest('[data-res-move]');
+    if (mv) {
+      if ((mv as HTMLButtonElement).disabled) return;
+      const mrow = target.closest('[data-id]');
+      const mhost = target.closest('[data-res-rows]');
+      if (!mrow || !mhost) return;
+      // A ROW-LEVEL `data-res` WINS over the host's, because one table can hold
+      // two families - Routes carries v4 and v6 - and the family decides which
+      // RouterOS menu the move goes to.
+      const mkey = mrow.getAttribute('data-res') || mhost.getAttribute('data-res-rows') || '';
+      const mschema = schemas.get(mkey);
+      // A viewer's arrows are already disabled by the page; this is the second
+      // check, on the schema the server sent, so a stale render cannot send a
+      // write the caller may not make.
+      if (!mschema || !mschema.permitted) return;
+      pendingMove = {
+        resource: mkey,
+        id: mrow.getAttribute('data-id') || '',
+        expectedIdentity: mrow.getAttribute('data-identity') || undefined,
+        direction: mv.getAttribute('data-res-move') || '',
+      };
+      doMove('');
+      return;
+    }
+
+    const host = target.closest('[data-res-rows]');
+    if (!host) return;
+    const row = target.closest('[data-id]');
+    if (!row || !host.contains(row)) return;
+    const key = row.getAttribute('data-res') || host.getAttribute('data-res-rows') || '';
+    if (!key) return;
+    openResource(socket, key, {
+      id: row.getAttribute('data-id') || '',
+      name: row.getAttribute('data-identity') || '',
+    });
+  });
+}
+
+/**
+ * Open the form for a row, or for a new one.
+ *
+ * An existing row is NOT rendered from the list payload. The collector reads
+ * with a proplist narrow enough for the page it feeds, so a form filled from it
+ * would blank every property the page does not display. The server is asked for
+ * a fresh read instead, and answers on `res:row`.
+ */
+export function openResource(socket: Socket, key: string,
+                             row: { id: string; name?: string } | null): void {
+  sock = socket;
+  wire(socket);
+  schemaFor(key).then((schema) => {
+    // No dialog for a viewer who cannot write - the server would refuse it, and
+    // a form that always fails is worse than no form.
+    //
+    // app.js asks this in each of its CALLERS instead. One check here covers
+    // them all, which matters because `dns`, `bridges` and `vlans` still open
+    // rows through their own per-page handlers; putting it in the delegation
+    // would have left those three uncovered until they migrate.
+    if (!schema.permitted) return;
+    if (!row) {
+      // The pickers are read when the form opens rather than cached with the
+      // schema: a bridge added a minute ago should be in the list. Until this
+      // asked, every Add form on a page with a picker rendered a text box while
+      // the Edit form beside it rendered the router's own list.
+      current = null;
+      socket.emit('res:new', { resource: key });
+      return;
+    }
+    current = { key, id: row.id, identity: row.name ?? null };
+    // `|| undefined`, NOT `?? ''`. An absent identity is OMITTED from the
+    // payload, exactly as the original's `getAttribute('data-identity') ||
+    // undefined` omits it - JSON.stringify drops an undefined value and keeps an
+    // empty string.
+    //
+    // Harmless today, because `find` in resource.go guards on `expected != ""`
+    // and so treats the two the same. Aligned anyway: the payload contract is
+    // one of the things this port is not supposed to move, and a server that
+    // later distinguished "expect an empty name" from "do not check" would find
+    // this side asserting something it never meant to.
+    socket.emit('res:row', { resource: key, id: row.id, expectedIdentity: row.name || undefined });
+  }).catch((e) => {
+    console.error(e);
+    setError(String(e.message || e));
+  });
+}
+
+function wire(socket: Socket): void {
+  if (wired) return;
+  wired = true;
+
+  socket.on('res:row', (d) => {
+    const schema = schemas.get(d.resource);
+    if (!schema) return;
+    show(schema, d.values || {}, { id: d.id, identity: d.identity }, !!d.readOnly,
+         d.options || {}, d.actions || [], d.removable !== false);
+  });
+
+  socket.on('res:history', (d) => {
+    if (!d || !d.resource) return;
+    hist.set(d.resource, d);
+    mountAddSlots();
+  });
+
+  socket.on('res:schema', (d) => {
+    if (!d || !d.key) return;
+    schemas.set(d.key, d);
+    mountAddSlots();
+    const q = waiting.get(d.key) || [];
+    waiting.delete(d.key);
+    q.forEach((cb) => cb(d));
+  });
+
+  // Schemas are PER-ROUTER: switching routers can change whether the viewer may
+  // write, so they are dropped and re-asked rather than carried across.
+  // `router:switched` and not `router:active` - the permissions that matter are
+  // the ones for the router we have arrived at.
+  const refreshAll = (): void => {
+    routerSelected = true;
+    schemas.clear();
+    waiting.clear();
+    mountAddSlots();                       // clear the last router's buttons
+    document.querySelectorAll('[data-res-add]').forEach((host) => {
+      (host.getAttribute('data-res-add') || '').split(',')
+        .forEach((k) => { const key = k.trim(); if (key) schemaFor(key); });
+    });
+  };
+  // ── ONLY ON router:switched ──────────────────────────────────────────────────
+  //
+  // It also ran on `connect`, before any router was selected, so every page load
+  // asked for every schema twice more than it needed, and the server refused
+  // both sets: 28 `res:error unavailable` replies. The server sends
+  // `router:switched` on every select, a reconnect included (a new connection
+  // has no router), so this one listener covers every case the other did.
+  socket.on('router:switched', refreshAll);
+  socket.on('disconnect', () => { routerSelected = false; });
+
+  // ── A CARD WHOSE ADD SLOT CHANGES RESOURCE SAYS SO ────────────────────────
+  //
+  // The Firewall card's four tables share one header, and its Add button belongs
+  // to whichever tab is showing; the WiFi and CAPsMAN cards do the same. Those
+  // three pages rewrite `data-res-add` and then announce `mikrodash:resmount`
+  // (`firewall.ts`, `wifi.ts`, `capsman.ts`), and the live app listens for it
+  // here - `../MikroDash/public/app.js:15186`.
+  //
+  // This port announced it three times and listened nowhere, so the Add button
+  // on a swapped tab kept the PREVIOUS tab's resource: pressing Add on the NAT
+  // table opened the filter-rule form. Found by the announcement audit,
+  // which recorded it as one-sided until now.
+  //
+  // Schemas are NOT cleared, unlike `refreshAll`. The router has not changed -
+  // only which resource this slot names - so what is already known stays known
+  // and only the newly named keys are asked for.
+  document.addEventListener('mikrodash:resmount', () => {
+    document.querySelectorAll('[data-res-add]').forEach((host) => {
+      (host.getAttribute('data-res-add') || '').split(',')
+        .forEach((k) => { const key = k.trim(); if (key) schemaFor(key); });
+    });
+    mountAddSlots();
+  });
+
+  socket.on('res:new', (d) => {
+    const schema = schemas.get(d.resource);
+    if (!schema) return;
+    show(schema, null, null, false, d.options || {}, []);
+  });
+
+  socket.on('res:ok', () => {
+    const done = lastSave;
+    lastSave = null;
+    close();
+    if (done) extras.get(done.key)?.saved?.(done.values);
+  });
+
+  // Which refusals carry the ROUTER's own message rather than MikroDash's.
+  const routerSaid: Record<string, boolean> = { 'router-denied': true, 'write-failed': true };
+
+  socket.on('res:error', (d) => {
+    // ANY GUARD WARNING: ackGate always sends a fingerprint with one.
+    if (d && (d.fingerprint || d.code === 'stale-warning')) {
+      showWarning(d);
+      return;
+    }
+    const codes: Record<string, string> = {
+      denied: 'You may not change this.',
+      unavailable: 'The router is not reachable.',
+      'stale-row': 'That row changed on the router. Close and reopen it.',
+      'read-only-row': 'This entry cannot be edited here.',
+      'not-creatable': 'This cannot be added here.',
+      'not-editable': 'This can be viewed and deleted here, not edited.',
+      'not-removable': 'This entry cannot be removed here.',
+      'router-denied': 'The router refused the change: the API user lacks permission.',
+      'write-failed': 'The router refused the change.',
+      'bad-request': 'That request was incomplete.',
+      'guard-not-ported': 'This change needs a safety check that is not available yet, so it was refused.',
+      'guard-refused': guardRefusedText(d && d.rule),
+      'rate-limited': 'Too many changes to this router in the last minute. Wait a moment and try again.',
+      'outcome-unknown': 'The router accepted the change, but it could not be confirmed. The table has been refreshed; check it before trying again.',
+    };
+    if (d && d.code === 'invalid' && Array.isArray(d.errors)) {
+      setError(d.errors.map((e) => e.message).join('; '));
+      return;
+    }
+    // THE ROUTER'S OWN WORDS TOO, BUT ONLY WHERE THEY ARE THE ROUTER'S. The
+    // mapped sentence says what KIND of refusal it was; the trap says which menu
+    // and which property, and dropping it turned a policy problem into a dead
+    // end. `rate-limited` and `outcome-unknown` are MikroDash speaking rather
+    // than the router, so a "Router:" on those would be a lie.
+    const said = (d && d.message) || '';
+    const mapped = (d && codes[d.code]) || '';
+    setError(mapped
+      ? mapped + (routerSaid[d.code] && said && said !== mapped ? ' Router: ' + said : '')
+      : said || 'The change was refused.');
+  });
+
+  // ── the preview ───────────────────────────────────────────────────────────
+  //
+  // The command is rendered by the SERVER, never assembled here: it is built
+  // from the same validated values a save would use, and its secret masking
+  // lives beside the code that knows which fields are secret. A browser-side
+  // preview would be a second implementation of both, and the one that leaks.
+  el('res_previewBtn')?.addEventListener('click', () => {
+    if (!current) return;
+    const schema = schemas.get(current.key);
+    if (!schema) return;
+    socket.emit('res:preview', {
+      resource: current.key,
+      id: current.id || '',
+      values: readValues(schema),
+    });
+  });
+
+  socket.on('res:preview', (d) => {
+    // Guarded on `resource`, as the original is: a reply for a form the operator
+    // has since closed and reopened elsewhere must not paint into this one.
+    if (!d || !current || d.resource !== current.key) return;
+    const p = el('res_preview');
+    if (!p) return;
+    p.textContent = d.command || '';
+    p.style.display = '';
+  });
+
+  el('res_save')?.addEventListener('click', () => {
+    if (!current) return;
+    const schema = schemas.get(current.key);
+    if (!schema) return;
+    setError('');
+    // Captured, so an acknowledged retry sends the SAME values rather than
+    // re-reading a form the operator may have touched while reading the warning.
+    const body = {
+      resource: current.key,
+      id: current.id || '',
+      expectedIdentity: current.identity || '',
+      values: readValues(schema),
+    };
+    lastSave = { key: body.resource, values: body.values };
+    retry = (ack: string) => socket.emit('res:save', { ...body, ack });
+    socket.emit('res:save', body);
+  });
+
+  /**
+   * Start a new row from the one on screen.
+   *
+   * ── IT WRITES NOTHING ───────────────────────────────────────────────────
+   *
+   * It redraws the SAME dialog in Add mode with the values that were in the
+   * fields, so the operator edits what differs and presses Add themselves. That
+   * was the requirement - a copy that saved itself would be a second row nobody
+   * reviewed, on a page where the identity is usually the thing you meant to
+   * change.
+   *
+   * The values are read out of the FORM rather than kept from the payload, so an
+   * edit made before pressing Duplicate is carried into the copy. That is what
+   * the button looks like it does.
+   */
+  el('res_dup')?.addEventListener('click', () => {
+    if (!shown) return;
+    show(shown.schema, readValues(shown.schema), null, false, shown.options, []);
+  });
+
+  el('res_delete')?.addEventListener('click', () => {
+    if (!current || !current.id) return;
+    lastSave = null;
+    const body = {
+      resource: current.key,
+      id: current.id,
+      expectedIdentity: current.identity || '',
+    };
+    retry = (ack: string) => socket.emit('res:remove', { ...body, ack });
+    socket.emit('res:remove', body);
+  });
+
+  document.querySelectorAll('[data-modal-close="resModal"]').forEach((b) =>
+    b.addEventListener('click', close));
+  el('resModal')?.addEventListener('click', (e) => {
+    if (e.target === el('resModal')) close();
+  });
+}

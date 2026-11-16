@@ -58,8 +58,8 @@ export function defaultsFromValues(defs: VarDef[], values: Record<string, string
  *  that fills them all. Passwords are hidden unless `reveal`. */
 export function valuesGrid(defs: VarDef[], routers: RouterOpt[], values: Record<string, Record<string, string>>,
   reveal = false): string {
-  if (!defs.length) return '<div class="cfg-meta">This template asks for no settings.</div>';
-  if (!routers.length) return '<div class="cfg-meta">Pick routers first.</div>';
+  if (!defs.length) return '<div class="cfg-meta">' + translate('This template asks for no settings.', '此模板无需设置。') + '</div>';
+  if (!routers.length) return '<div class="cfg-meta">' + translate('Pick routers first.', '请先选择路由器。') + '</div>';
   const kind = (d: VarDef): string => (d.type === 'secret' && !reveal ? 'password' : 'text');
   const secrets = defs.some((d) => d.type === 'secret');
   const cell = (rid: string, d: VarDef): string => {
@@ -163,7 +163,7 @@ export function deployTile(t: CfgDeployTarget): string {
   const detail = t.state === 'applying' ? translateLabel(STEP[t.step] ?? t.step)
     : t.message || (t.state === 'applied' && t.reconnectMs ? 'Back in ' + (t.reconnectMs / 1000).toFixed(1) + ' s' : '');
   return '<div class="cfg-tile ' + k.cls + '"><div class="cfg-tile-ring"></div><div class="cfg-tile-body">' +
-    '<div class="cfg-tile-name">' + esc(t.label) + (t.canary ? '<span class="pill pill-alt">Canary</span>' : '') +
+    '<div class="cfg-tile-name">' + esc(t.label) + (t.canary ? '<span class="pill pill-alt">' + translate('Canary', '先行设备') + '</span>' : '') +
     '</div><div class="cfg-tile-state">' + esc(translateLabel(k.word)) + (t.reverted ? translate(' · reverted', ' · 已回滚') : '') + '</div>' +
     (detail ? '<div class="cfg-tile-detail">' + esc(detail) + '</div>' : '') +
     (t.backupId ? '<div class="cfg-meta">Restore point #' + t.backupId + '</div>' : '') + '</div></div>';

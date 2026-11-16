@@ -125,7 +125,11 @@ export function initLanguage(): void {
   while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
   for (const node of textNodes) {
     const parent = node.parentElement;
-    if (!parent || parent.closest('script, style, pre, code, textarea, select, .terminal, .xterm')) continue;
+    if (!parent || parent.closest('script, style, pre, code, textarea, .terminal, .xterm')) continue;
+    // An option without an explicit value uses its label as the submitted value.
+    // Translating it would silently change the setting sent to the router.
+    const option = parent.closest('option');
+    if (parent.closest('select') && (!option || !option.hasAttribute('value'))) continue;
     const value = node.data.trim().replace(/\s+/g, ' ');
     const translated = labels[value] ?? extraLabels[value];
     if (translated) node.data = node.data.replace(/\S[\s\S]*\S|\S/, translated);
