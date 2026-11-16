@@ -1,0 +1,45 @@
+name: NetFlow Domain Intelligence isolated checks
+on:
+  push:
+    branches: [netflow-domain-ci]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: thedyerman/mikrotik-home-netflow-plus
+          ref: 0be3da7558332df832b473d3f592afd76feeee87
+          path: upstream
+      - run: cp -a netflow-overlay/. upstream/
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Frontend build
+        working-directory: upstream/web
+        run: npm ci && npm run build
+      - name: Go test and race
+        working-directory: upstream
+        run: go test ./... && go test -race ./... && go vet ./...
+      - name: Build isolated image
+        working-directory: upstream
+        run: docker build -t nfp-domain-ci:isolated .
+      - name: Isolated container health check
+        run: |
+          set -eu
+          docker run -d --name nfp-domain-ci -p 127.0.0.1:18080:8080 nfp-domain-ci:isolated
+          trap 'docker rm -f nfp-domain-ci' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz; then exit 0; fi
+            sleep 2
+          done
+          docker logs nfp-domain-ci
+          exit 1

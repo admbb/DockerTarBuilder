@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "rules": [
+    {"domain":"youtube.com","match":"suffix","appId":"youtube","source":"curated","confidence":"high","enabled":true},
+    {"domain":"youtube-nocookie.com","match":"suffix","appId":"youtube","source":"curated","confidence":"high","enabled":true},
+    {"domain":"netflix.com","match":"suffix","appId":"netflix","source":"curated","confidence":"high","enabled":true},
+    {"domain":"bilibili.com","match":"suffix","appId":"bilibili","source":"curated","confidence":"high","enabled":true},
+    {"domain":"douyin.com","match":"suffix","appId":"douyin","source":"curated","confidence":"high","enabled":true},
+    {"domain":"spotify.com","match":"suffix","appId":"spotify","source":"curated","confidence":"high","enabled":true},
+    {"domain":"telegram.org","match":"suffix","appId":"telegram","source":"curated","confidence":"high","enabled":true},
+    {"domain":"discord.com","match":"suffix","appId":"discord","source":"curated","confidence":"high","enabled":true},
+    {"domain":"steampowered.com","match":"suffix","appId":"steam","source":"curated","confidence":"high","enabled":true},
+    {"domain":"chatgpt.com","match":"suffix","appId":"chatgpt","source":"curated","confidence":"high","enabled":true},
+    {"domain":"api.openai.com","match":"exact","appId":"openai_api","source":"curated","confidence":"high","enabled":true},
+    {"domain":"deepseek.com","match":"suffix","appId":"deepseek","source":"curated","confidence":"high","enabled":true},
+    {"domain":"github.com","match":"suffix","appId":"github","source":"curated","confidence":"high","enabled":true},
+    {"domain":"gitlab.com","match":"suffix","appId":"gitlab","source":"curated","confidence":"high","enabled":true},
+    {"domain":"hub.docker.com","match":"exact","appId":"dockerhub","source":"curated","confidence":"high","enabled":true},
+    {"domain":"pypi.org","match":"suffix","appId":"pypi","source":"curated","confidence":"high","enabled":true},
+    {"domain":"npmjs.com","match":"suffix","appId":"npm","source":"curated","confidence":"high","enabled":true}
+  ]
+}
