@@ -1,0 +1,36 @@
+name: Build and publish NetFlow Plus Chinese image
+on:
+  push:
+    branches: [netflow-zh-build]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned upstream
+        uses: actions/checkout@v4
+        with:
+          repository: thedyerman/mikrotik-home-netflow-plus
+          ref: 0be3da7558332df832b473d3f592afd76feeee87
+          path: upstream
+      - name: Apply Chinese changes
+        run: cp -a netflow-overlay/. upstream/
+      - name: Build image
+        run: docker build -t netflow-plus-zh:local upstream
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -eu
+          image="${DOCKERHUB_USERNAME,,}/netflow-plus-zh"
+          docker tag netflow-plus-zh:local "$image:latest"
+          docker push "$image:latest"
