@@ -109,7 +109,7 @@ function LiveFlows({ device, compact = false }: { device?: number; compact?: boo
       const label = group === "device" ? r.devName : group === "dest" ? r.destLabel : r.service;
       let g = m.get(key);
       if (!g) {
-        g = { key, label, sub: group === "device" ? r.localIp : group === "dest" ? r.destKind : "", rows: [], down: 0, up: 0, bytesDown: 0, bytesUp: 0 };
+        g = { key, label, sub: group === "device" ? r.localIp : group === "dest" ? (r.destKind === "app" ? (isChinese() ? "应用" : "Application") : r.destKind) : "", rows: [], down: 0, up: 0, bytesDown: 0, bytesUp: 0 };
         m.set(key, g);
       }
       g.rows.push(r);
