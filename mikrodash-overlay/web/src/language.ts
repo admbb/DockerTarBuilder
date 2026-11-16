@@ -65,9 +65,21 @@ export function languageSwitcher(): HTMLButtonElement {
 }
 
 export function initLanguage(): void {
-  const host = document.querySelector('.nav-logo');
+  const host = document.querySelector('#sidenav');
   if (!host) return;
-  host.append(languageSwitcher());
+  const switcher = languageSwitcher();
+  const label = switcher.textContent;
+  switcher.textContent = '';
+  switcher.style.cssText = 'display:flex;align-items:center;gap:.65rem;width:100%;min-height:44px;flex-shrink:0;padding:0 14px;border:0;border-top:1px solid var(--border);background:transparent;color:var(--text-muted);cursor:pointer;text-align:left;overflow:hidden';
+  const icon = document.createElement('span');
+  icon.className = 'nav-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = '🌐';
+  const caption = document.createElement('span');
+  caption.className = 'nav-label';
+  caption.textContent = label;
+  switcher.append(icon, caption);
+  host.append(switcher);
   if (!isChinese()) return;
   document.documentElement.lang = 'zh-CN';
   // Only leaf elements in known, static presentation classes are eligible.
