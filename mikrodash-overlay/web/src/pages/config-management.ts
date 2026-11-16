@@ -5,7 +5,7 @@
 // The markup is built by config-management-cards.ts and -editor.ts.
 
 import { el, esc, renderSortHeader, sortRows, type SortState } from '../dom';
-import { translate } from '../language';
+import { translate, translateCredentialError } from '../language';
 import type { Socket } from '../socket';
 import type { CfgDeployPayload, Hunk } from '../gen/payloads';
 import {
@@ -478,7 +478,7 @@ export function initConfigManagementPage(socket: Socket, isVisible: (page: strin
     const r = await fetch('/api/credentials/' + path, { credentials: 'same-origin', ...init });
     const body = (await r.json().catch(() => ({}))) as T & { ok?: boolean; error?: string };
     if (!r.ok || body.ok === false) {
-      throw new ApiError(body.error || 'The request failed (' + r.status + ')', r.status);
+      throw new ApiError(body.error ? translateCredentialError(body.error) : translate('The request failed (' + r.status + ')', '请求失败（' + r.status + '）'), r.status);
     }
     return body;
   }
@@ -552,7 +552,7 @@ export function initConfigManagementPage(socket: Socket, isVisible: (page: strin
     cpEditing = p;
     cpShowError('');
     const title = el('cpModalTitle');
-    if (title) title.textContent = p ? 'Edit credential profile' : 'New credential profile';
+    if (title) title.textContent = p ? translate('Edit credential profile', '编辑凭据配置') : translate('New credential profile', '新建凭据配置');
     const set = (id: string, v: string): void => {
       const n = el<HTMLInputElement>(id);
       if (n) n.value = v;
@@ -573,8 +573,8 @@ export function initConfigManagementPage(socket: Socket, isVisible: (page: strin
     const note = el('cpPassNote');
     if (note) {
       note.textContent = p
-        ? 'Leave blank to keep the current password. A new one is applied to every linked router.'
-        : 'Required for a new profile.';
+        ? translate('Leave blank to keep the current password. A new one is applied to every linked router.', '留空以保留当前密码。新密码会应用到所有关联路由器。')
+        : translate('Required for a new profile.', '新建配置时必填。');
     }
     cpDrawPolicies(p ? p.policies : (cpPresets.read ?? []));
     cpOpen('cpModal', true);
@@ -779,7 +779,7 @@ export function initConfigManagementPage(socket: Socket, isVisible: (page: strin
     const title = el('cpLinksTitle');
     // NOT "Routers": the dialog decides sites too, and a heading naming only
     // half of it is how the two dropdowns read as one choice in the first place.
-    if (title) title.textContent = p ? 'Where "' + p.name + '" applies' : 'Where this profile applies';
+    if (title) title.textContent = p ? translate('Where "' + p.name + '" applies', '“' + p.name + '”的应用范围') : translate('Where this profile applies', '此配置的应用范围');
     // ── THE ROUTER LIST IS RE-READ EVERY TIME, AND THAT IS NOT WASTE ────────
     //
     // `loadRouters` returns early once `dep.routers` is populated, which is

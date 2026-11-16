@@ -168,3 +168,28 @@ export function initLanguage(): void {
   const input = document.querySelector<HTMLTextAreaElement>('#aiAgentInput');
   if (input) input.placeholder = '询问有关此路由器的问题…（Enter 发送，Shift+Enter 换行）';
 }
+// Only exact, application-owned messages are translated; unknown backend and
+// RouterOS messages remain intact so diagnostics are never silently altered.
+const credentialErrors: Record<string, string> = {
+  'Devices still sign in with this profile. Switch them to their own login first.':'仍有设备使用此配置登录，请先将它们切换为各自的登录账户。',
+  'the login profile could not be saved':'无法保存登录配置。',
+  'could not read the request':'无法读取请求。',
+  'no such login profile':'登录配置不存在。',
+  'could not read the devices':'无法读取设备列表。',
+  'This profile is already being changed. Wait for that to finish.':'此配置正在更改，请等待完成。',
+  'no such login profile, or its password cannot be opened':'登录配置不存在，或无法解密其密码。',
+  'that device does not use this profile':'该设备没有使用此配置。',
+  'the device is gone':'设备已不存在。',
+  'the device did not connect with its current login, so nothing was changed':'设备无法使用当前账户连接，因此未做任何更改。',
+  'could not read the site links':'无法读取站点关联。', 'no such profile':'凭据配置不存在。',
+  'could not read the sites':'无法读取站点。', 'the site could not be unlinked':'无法解除站点关联。',
+  'could not read the profiles':'无法读取凭据配置。', 'could not read the links':'无法读取关联信息。',
+  'could not mint a profile id':'无法生成配置标识。', 'settings storage is unavailable':'设置存储不可用。',
+  'a profile needs a name':'请输入配置名称。', 'the default could not be set':'无法设置默认配置。',
+  'the default could not be cleared':'无法取消默认配置。', 'the removal could not be queued':'无法将移除操作加入队列。',
+  'the profile could not be removed':'无法移除该配置。', 'the profile could not be dropped':'无法删除该配置。',
+  'you cannot change users on that router':'你没有权限更改该路由器的用户。', 'the retry could not be queued':'无法将重试操作加入队列。',
+};
+export function translateCredentialError(message: string): string {
+  return isChinese() ? (credentialErrors[message] ?? message) : message;
+}

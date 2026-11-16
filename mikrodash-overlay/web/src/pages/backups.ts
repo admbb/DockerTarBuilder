@@ -1,0 +1,512 @@
+/**
+ * The Backups page.
+ *
+ * A thin view over ONE server payload (`backups:state`): settings, summary and
+ * history arrive together, so there is no order in which the parts can disagree
+ * with each other.
+ *
+ * ── WRITE PERMISSION IS CARRIED, NOT INFERRED ───────────────────────────────
+ *
+ * `permitted` comes on the payload rather than being worked out from the role
+ * here. The server decides; this only draws. That matters because "may
+ * download" is a WRITE-level question - an export describes the whole network
+ * and the binary carries every key on the device - and a page inferring it from
+ * "can I see this page" would offer both to a viewer.
+ *
+ * ── A VIEWER GETS NO BUTTONS, NOT DISABLED ONES ─────────────────────────────
+ *
+ * There is nothing for them to try, so offering a control and then refusing is
+ * just noise. Within the permitted case, buttons DIM rather than disappear as
+ * the selection changes, because a control that vanishes as you tick boxes is
+ * harder to find again than one that greys.
+ */
+
+import { fmtTs } from '../timefmt';
+import { esc, el, fmtBytes } from '../dom';
+import type { PillTone } from '../palette';
+import type { Socket } from '../socket';
+import type { StatePayload } from '../gen/payloads';
+import type { HandEvents } from '../events-hand';
+import { hunksHTML } from '../diffview';
+import { isChinese, translate } from '../language';
+
+/** Every outcome the runner can record. An unknown one still renders. */
+const OUTCOME: Record<string, { label: string; tone: PillTone }> = {
+  changed: { label: 'Stored', tone: 'ok' },
+  unchanged: { label: 'No change', tone: 'rx' },
+  skipped: { label: 'Skipped', tone: 'warn' },
+  failed: { label: 'Failed', tone: 'err' },
+};
+
+const BTN = 'padding:.3125rem .5rem;font-size:.75rem;line-height:1.3333333333';
+
+const ERRORS: Record<string, string> = {
+  denied: 'You do not have permission to do that.',
+  'not-configured': 'Enable backups for this router first, so a password can be generated.',
+  'not-found': 'That backup is no longer available.',
+  'confirm-mismatch': 'The name you typed did not match the router name.',
+  'no-route-back': 'The router has no address it can reach MikroDash on. Set a backup base URL in Settings.',
+  unavailable: 'The router is not connected.',
+};
+
+/** When a backup was taken, to the minute, in the display timezone. */
+function fmtWhen(ts: number): string {
+  return fmtTs(ts, false);
+}
+
+export function initBackupsPage(socket: Socket, isVisible: (page: string) => boolean): void {
+  if (!el('bkTable')) return;
+
+  let state: StatePayload | null = null;
+  let busy = false;
+  let pendingRestore: number | null = null;
+
+  // IDS RATHER THAN ROW INDEXES, so a list that re-renders under a scheduled
+  // run does not silently move the selection onto different backups.
+  const picked = new Set<number>();
+  // Which selected rows Restore could actually act on. Delete works on any row;
+  // Restore needs one whose files are still on disk, so the two cannot share a
+  // single "is it selected" answer.
+  const restorable = new Set<number>();
+
+  const pickBoxes = (): HTMLInputElement[] => {
+    const t = el('bkTable');
+    return t ? Array.from(t.querySelectorAll<HTMLInputElement>('[data-bk-pick]:not([disabled])')) : [];
+  };
+
+  /** Drop ids that have left the table entirely - deleted, or a router switch. */
+  function prunePicked(st: StatePayload): void {
+    const live = new Set((st.rows || []).map((r) => r.id));
+    Array.from(picked).forEach((id) => { if (!live.has(id)) picked.delete(id); });
+    restorable.clear(); // rebuilt as renderRows walks the rows
+  }
+
+  function renderSummary(st: StatePayload): void {
+    const set = (id: string, v: string): void => { const e = el(id); if (e) e.textContent = v; };
+    set('bkSumLast', fmtWhen(st.summary?.lastAt || 0));
+    set('bkSumStored', String(st.summary?.stored || 0));
+    set('bkSumBytes', fmtBytes(st.summary?.bytes || 0));
+    set('bkSumSchedule', st.settings.enabled
+      ? (isChinese() ? ({ hourly: '每小时', daily: '每天', weekly: '每周', monthly: '每月' } as Record<string, string>)[st.settings.schedule] ?? st.settings.schedule : st.settings.schedule.charAt(0).toUpperCase() + st.settings.schedule.slice(1))
+      : translate('Off', '关闭'));
+    set('bkRouterName', st.label || '');
+  }
+
+  /**
+   * An hourly backup that waits for 02:00 is a daily backup, so the time is not
+   * offered for that frequency - greyed WITH THE REASON, rather than silently
+   * accepted and then ignored by the scheduler.
+   *
+   * The hint names the clock, because "02:00" is meaningless until you know
+   * whose 02:00. An empty timezone is the server's own.
+   */
+  function syncTime(st: StatePayload | null): void {
+    const input = el<HTMLInputElement>('bkTime');
+    const hint = el('bkTimeHint');
+    if (!input || !hint) return;
+    const hourly = el<HTMLSelectElement>('bkSchedule')?.value === 'hourly';
+    input.disabled = hourly || !st?.permitted;
+    if (hourly) { hint.textContent = translate('not used for hourly', '每小时备份不使用此时间'); return; }
+    if (!input.value) { hint.textContent = translate('any time', '任意时间'); return; }
+    const tz = st?.settings?.timezone;
+    hint.textContent = tz ? tz + translate(' time', ' 时间') : translate('server time', '服务器时间');
+  }
+
+  function renderSettings(st: StatePayload): void {
+    const enabled = el<HTMLInputElement>('bkEnabled');
+    if (enabled) enabled.checked = !!st.settings.enabled;
+    const sched = el<HTMLSelectElement>('bkSchedule');
+    if (sched) sched.value = st.settings.schedule;
+    const time = el<HTMLInputElement>('bkTime');
+    if (time) time.value = st.settings.time || '';
+    const kc = el<HTMLInputElement>('bkKeepCount');
+    if (kc) kc.value = String(st.settings.keepCount);
+    const kd = el<HTMLInputElement>('bkKeepDays');
+    if (kd) kd.value = String(st.settings.keepDays);
+    const sec = el<HTMLInputElement>('bkSecrets');
+    if (sec) sec.checked = !!st.settings.migrationExport;
+
+    ['bkEnabled', 'bkSchedule', 'bkTime', 'bkKeepCount', 'bkKeepDays',
+      'bkSecrets'].forEach((id) => {
+      const e = el<HTMLInputElement>(id);
+      if (e) e.disabled = !st.permitted;
+    });
+    syncTime(st);
+
+    const actions = el('bkSettingsActions');
+    if (actions) {
+      actions.innerHTML = st.permitted
+        ? '<button class="sbtn sbtn-primary" style="' + BTN + '" id="bkSave">' + translate('Save', '保存') + '</button>' : '';
+      if (st.permitted) el('bkSave')?.addEventListener('click', saveSettings);
+    }
+
+    const hist = el('bkHistoryActions');
+    if (hist) {
+      // Restore and Delete lead; Back Up Now anchors the right-hand end, so the
+      // button that needs no selection never changes state as rows are ticked.
+      hist.innerHTML = st.permitted
+        ? '<button class="sbtn sbtn-purple" style="' + BTN + '" id="bkRestore" disabled>' + translate('Restore', '恢复') + '</button>' +
+          '<button class="sbtn sbtn-danger" style="' + BTN + '" id="bkDelete" disabled>' + translate('Delete', '删除') + '</button>' +
+          '<button class="sbtn sbtn-primary" style="' + BTN + '" id="bkRun"' + (busy ? ' disabled' : '') + '>' +
+          (busy ? translate('Backing up&hellip;', '正在备份…') : translate('+ Back Up Now', '+ 立即备份')) + '</button>' : '';
+      if (st.permitted) {
+        el('bkRun')?.addEventListener('click', runNow);
+        el('bkDelete')?.addEventListener('click', deleteSelected);
+        el('bkRestore')?.addEventListener('click', restoreSelected);
+      }
+    }
+  }
+
+  function renderRows(st: StatePayload): void {
+    const rows = st.rows || [];
+    const badge = el('bkBadge');
+    if (badge) badge.textContent = String(rows.length);
+    const note = el('bkNote');
+    if (note) {
+      note.textContent = rows.length ? '' : translate('No backups have been taken yet.', '尚无备份。');
+      note.style.color = '';
+    }
+
+    const tbody = el('bkTable');
+    if (!tbody) return;
+    tbody.innerHTML = rows.map((r) => {
+      const o = OUTCOME[r.outcome] || { label: r.outcome, tone: 'muted' as PillTone };
+      const actions: string[] = [];
+      if (r.stem && !r.pruned) {
+        actions.push('<button class="sbtn sbtn-ghost" style="' + BTN +
+          '" data-bk-diff="' + r.id + '">' + translate('Changes', '变更') + '</button>');
+        if (st.permitted) {
+          // PLAIN LINKS, so the browser saves the file rather than the page
+          // having to hold several MB in memory to hand it over.
+          const q = '?routerId=' + encodeURIComponent(st.routerId);
+          actions.push('<a class="sbtn sbtn-ghost" style="' + BTN +
+            '" href="/api/backups/' + r.id + '/rsc' + q + '">.rsc</a>');
+          // ── ONLY WHEN THE ROW HAS ONE ───────────────────────────────
+          //
+          // Per ROW, not per router: switching the setting on does not
+          // retrofit backups taken before it, so a link drawn from the
+          // router's setting would 404 on every older row.
+          if (r.hasSecrets) {
+            actions.push('<a class="sbtn sbtn-ghost" style="' + BTN +
+              '" title="Full export INCLUDING passwords and keys - for rebuilding ' +
+              'on a different device" href="/api/backups/' + r.id + '/secrets' + q +
+              '">.rsc (secrets)</a>');
+          }
+          actions.push('<a class="sbtn sbtn-ghost" style="' + BTN +
+            '" href="/api/backups/' + r.id + '/backup' + q + '">.backup</a>');
+        }
+      } else if (r.pruned) {
+        actions.push('<span class="muted-note">' + translate('pruned', '已清理') + '</span>');
+      }
+
+      const detail = r.error ? esc(r.error) : (r.stem ? esc(r.stem) : '');
+      // EVERY row is selectable, because Delete clears the row itself and a row
+      // with no files - an unchanged run, or one retention took - is still the
+      // operator's to remove. Restore is the narrower action, so it is gated on
+      // `restorable` rather than on the checkbox.
+      const pickable = !!st.permitted;
+      const canRestore = !!(r.stem && !r.pruned);
+      if (canRestore) restorable.add(r.id);
+      const isPicked = pickable && picked.has(r.id);
+
+      return '<tr' + (isPicked ? ' class="bk-row-picked"' : '') + '>' +
+        '<td class="text-center tbl-pick">' +
+          '<input type="checkbox" class="bk-pick" data-bk-pick="' + r.id + '"' +
+          (isPicked ? ' checked' : '') + (pickable ? '' : ' disabled') +
+          ' aria-label="Select this restore point">' +
+        '</td>' +
+        // The row id is what an audit entry names and what a support question
+        // quotes - so it needs to be readable, not dug out of the DOM.
+        '<td><span class="pill pill-rx">' + esc(String(r.id)) + '</span></td>' +
+        '<td>' + esc(fmtWhen(r.takenAt)) +
+          (detail ? '<div class="muted-note" style="font-size:.7rem">' + detail + '</div>' : '') + '</td>' +
+        // ── A PRUNED ROW SAID "Stored", AND 3.3 MB ─────────────────────────
+        //
+        // `outcome` records what the RUN did and never changes afterwards, so a
+        // row whose files retention has since removed went on reporting the
+        // outcome of the day it ran: a green "Stored" badge and the size of a
+        // file that no longer exists. The only thing saying otherwise was the
+        // word "pruned" in the actions column.
+        //
+        // That is why "Keep at most 10" read as broken. This table is HISTORY
+        // and legitimately holds more rows than there are restore points - the
+        // summary card counts those correctly - but nine tombstones claiming to
+        // be stored 3.3MB backups is not history, it is nine wrong rows. The
+        // count in the header is the number of runs; the number of BACKUPS is
+        // what the badges have to be honest about.
+        //
+        // The state is applied over the outcome rather than folded into
+        // OUTCOME, because they answer different questions and both are worth
+        // keeping: the run DID store something, and that something is gone now.
+        '<td><span class="pill pill-' + (r.pruned ? 'muted' : o.tone) + '"' +
+          (r.pruned ? ' title="Stored at the time, then removed by retention"' : '') +
+          '>' + esc(r.pruned ? translate('Pruned', '已清理') : isChinese() ? ({ changed: '已保存', unchanged: '无变化', skipped: '已跳过', failed: '失败' } as Record<string, string>)[r.outcome] ?? o.label : o.label) + '</span></td>' +
+        '<td>' + esc(r.source === 'manual' ? (translate('Manual', '手动') + (r.actor ? ' · ' + r.actor : '')) : translate('Schedule', '计划')) + '</td>' +
+        '<td>' + esc(r.osVersion || '-') + '</td>' +
+        // NO SIZE ON A PRUNED ROW. The bytes are still in the record and are
+        // still true of the past, but printing them here claims disk that has
+        // been freed - and contradicts the Disk used card, which already counts
+        // live rows only.
+        '<td>' + (r.bytes && !r.pruned ? esc(fmtBytes(r.bytes)) : '-') + '</td>' +
+        '<td class="text-end">' + actions.join(' ') + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  /**
+   * Delete needs one or more; Restore needs EXACTLY ONE, because it replaces a
+   * whole configuration and "which of these three?" has no sensible answer.
+   */
+  function syncBulk(): void {
+    const n = picked.size;
+    const del = el<HTMLButtonElement>('bkDelete');
+    if (del) {
+      del.disabled = n === 0 || busy;
+      del.textContent = n > 1 ? translate('Delete', '删除') + ' (' + n + ')' : translate('Delete', '删除');
+      del.title = n === 0 ? translate('Select one or more restore points to delete', '请选择一个或多个还原点以删除') : '';
+    }
+    const rst = el<HTMLButtonElement>('bkRestore');
+    if (rst) {
+      // Exactly one, AND that one has files. Selecting a row whose backup is
+      // gone leaves nothing to restore from, so the button stays dim and says
+      // which case it is.
+      const only = n === 1 ? Array.from(picked)[0]! : null;
+      const ok = only !== null && restorable.has(only);
+      rst.disabled = !ok || busy;
+      rst.title = n === 0 ? translate('Select a restore point to restore from', '请选择一个还原点进行恢复')
+        : n > 1 ? translate('Restore takes a single restore point - select just one', '恢复只能选择一个还原点')
+        : !ok ? translate('That row has no stored backup to restore from', '该条目没有可恢复的备份文件')
+        : '';
+    }
+    const all = el<HTMLInputElement>('bkPickAll');
+    if (all) {
+      const boxes = pickBoxes();
+      const on = boxes.filter((b) => b.checked).length;
+      all.disabled = boxes.length === 0;
+      all.checked = boxes.length > 0 && on === boxes.length;
+      all.indeterminate = on > 0 && on < boxes.length;
+    }
+  }
+
+  function render(): void {
+    if (!state) return;
+    // Before the rows, so a selection retention pruned under us is dropped
+    // rather than left pointing at a row that no longer offers a checkbox.
+    prunePicked(state);
+    renderSummary(state);
+    renderSettings(state);
+    renderRows(state);
+    // After renderSettings (which rebuilds the header buttons) and renderRows
+    // (which rebuilds the boxes the select-all state is derived from).
+    syncBulk();
+  }
+
+  function saveSettings(): void {
+    socket.emit('backups:settings', {
+      enabled: el<HTMLInputElement>('bkEnabled')?.checked,
+      schedule: el<HTMLSelectElement>('bkSchedule')?.value,
+      // SENT EVEN WHEN HOURLY DISABLED THE FIELD: a chosen time should survive
+      // a trip through Hourly and back rather than being silently discarded.
+      time: el<HTMLInputElement>('bkTime')?.value,
+      keepCount: el<HTMLInputElement>('bkKeepCount')?.value,
+      keepDays: el<HTMLInputElement>('bkKeepDays')?.value,
+      migrationExport: el<HTMLInputElement>('bkSecrets')?.checked,
+    });
+  }
+
+  function runNow(): void {
+    busy = true;
+    render();
+    socket.emit('backups:run');
+  }
+
+  function deleteSelected(): void {
+    if (!state || !picked.size) return;
+    const ids = Array.from(picked);
+    const msg = ids.length === 1
+      ? translate('Delete this restore point?', '删除此还原点？')
+      : translate('Delete these ' + ids.length + ' restore points?', '删除这 ' + ids.length + ' 个还原点？');
+    // BOTH HALVES GO - the files and the row listing them - so say so, and say
+    // where the record does survive rather than implying nothing is kept.
+    if (!window.confirm(msg + translate('\n\nThe stored files and their history rows are removed,\nand cannot be recovered. The Audit page keeps the record.', '\n\n存储的文件及历史记录将被删除，且无法恢复。审计页面会保留操作记录。'))) return;
+    socket.emit('backups:delete', { ids });
+    picked.clear();
+    syncBulk();
+  }
+
+  function restoreSelected(): void {
+    if (picked.size !== 1) return;
+    askRestore(Array.from(picked)[0]!, false);
+  }
+
+  /**
+   * Restoring replaces the whole configuration and reboots, so the prompt says
+   * so in those words and asks the operator to type the router's name - the same
+   * confirmation a package upgrade requires.
+   *
+   * `acceptVersion` carries a second pass: the server refuses once on a RouterOS
+   * version mismatch, and the answer to that question is what turns the refusal
+   * into a go-ahead.
+   */
+  function askRestore(id: number, acceptVersion: boolean, versionNote?: string): void {
+    if (!state) return;
+    const lines = isChinese() ? [
+      '从此备份恢复 ' + state.label + '？', '',
+      '此操作会替换整个配置并重启路由器。',
+      '此备份之后的所有配置更改都会丢失。', '',
+      'MikroDash 连接所用的 API 账户也会被替换；如果该账户在备份时不存在，',
+      'MikroDash 将失去对该路由器的访问权限。',
+    ] : [
+      'Restore ' + state.label + ' from this backup?',
+      '',
+      'This REPLACES the entire configuration and reboots the router.',
+      'Everything configured since this backup is lost.',
+      '',
+      'The API user MikroDash connects as is part of what gets replaced - if',
+      'that user did not exist when this backup was taken, MikroDash will lose',
+      'access to this router.',
+    ];
+    if (versionNote) lines.push('', versionNote);
+    lines.push('', translate('Type the router name to confirm:', '输入路由器名称以确认：'));
+    const answer = window.prompt(lines.join('\n'), '');
+    if (answer === null) return;
+    socket.emit('backups:restore', { id, confirm: answer, acceptVersion: !!acceptVersion });
+    pendingRestore = id;
+  }
+
+  function renderDiff(d: HandEvents['backups:diff']): void {
+    const title = el('bkDiffTitle');
+    const summary = el('bkDiffSummary');
+    const body = el('bkDiffBody');
+    if (!title || !summary || !body) return;
+
+    if (d.baseline) {
+      title.textContent = translate('First backup', '首次备份');
+      summary.textContent = translate('This is the earliest stored configuration, so there is nothing to compare it against.', '这是最早保存的配置，没有更早的备份可供比较。');
+      body.innerHTML = '<div class="bk-diff-empty">' + translate('No earlier backup.', '没有更早的备份。') + '</div>';
+    } else if (d.truncated) {
+      title.textContent = translate('Changes', '变更');
+      summary.textContent = '';
+      body.innerHTML = '<div class="bk-diff-empty">' + translate('These two configurations differ too widely to show as a line-by-line diff.', '这两个配置差异过大，无法逐行比较。') + '</div>';
+    } else if (!d.hunks.length) {
+      title.textContent = translate('Changes', '变更');
+      summary.textContent = '';
+      body.innerHTML = '<div class="bk-diff-empty">' + translate('No differences.', '没有差异。') + '</div>';
+    } else {
+      title.textContent = translate('Changes', '变更');
+      summary.textContent = isChinese() ? '新增 ' + d.added + ' 行，删除 ' + d.removed + ' 行' : d.added + ' added, ' + d.removed + ' removed';
+      body.innerHTML = hunksHTML(d.hunks);
+    }
+    el('bkDiffModal')?.classList.add('open');
+  }
+
+  // ── Wiring ────────────────────────────────────────────────────────────────
+
+  socket.on('backups:state', (st) => {
+    state = st;
+    busy = st.running || false;
+    render();
+  });
+
+  socket.on('backups:running', () => { busy = true; render(); });
+
+  socket.on('backups:ran', () => {
+    // A scheduled run finished while the page was open.
+    if (isVisible('backups')) socket.emit('backups:list');
+  });
+
+  socket.on('backups:diff', renderDiff);
+
+  socket.on('backups:restoring', () => {
+    const n = el('bkNote');
+    if (n) { n.textContent = translate('Sending the backup to the router…', '正在将备份发送到路由器…'); n.style.color = ''; }
+  });
+
+  socket.on('backups:restored', () => {
+    pendingRestore = null;
+    const n = el('bkNote');
+    if (n) {
+      n.textContent = translate('Restore started. The router is rebooting and will be unreachable for a minute or two.', '恢复已开始。路由器正在重启，约一两分钟内无法访问。');
+      n.style.color = '';
+    }
+  });
+
+  socket.on('backups:error', (e) => {
+    busy = false;
+    render();
+    if (e?.code === 'version-mismatch' && pendingRestore !== null) {
+      // Asked once, then answered by re-submitting. The server refuses the first
+      // attempt precisely so this sentence can name both versions.
+      askRestore(pendingRestore, true,
+        translate('WARNING: this backup was taken on RouterOS ' + e.was + ' and the router now runs ' + e.now + '. MikroTik recommend matching versions.', '警告：此备份来自 RouterOS ' + e.was + '，而路由器当前运行 ' + e.now + '。MikroTik 建议版本一致。'));
+      return;
+    }
+    const note = el('bkNote');
+    if (e?.code === 'serial-mismatch') {
+      if (note) {
+        note.textContent = translate('Refused: this backup was taken from serial ' + e.was + ', but this router reports ' + e.now + '. A backup belongs to one device.', '已拒绝：此备份来自序列号为 ' + e.was + ' 的设备，而当前路由器序列号为 ' + e.now + '。备份只能用于原设备。');
+        note.style.color = 'var(--accent-warn)';
+      }
+      pendingRestore = null;
+      return;
+    }
+    pendingRestore = null;
+    // The page's own note line is the sink: there is no global toast, and each
+    // page surfaces its errors where the thing that failed is on screen.
+    if (note) {
+      const zhErrors: Record<string, string> = { denied: '你没有执行此操作的权限。', 'not-configured': '请先为此路由器启用备份，以便生成密码。', 'not-found': '该备份已不可用。', 'confirm-mismatch': '输入的名称与路由器名称不一致。', 'no-route-back': '路由器没有可用于访问 MikroDash 的地址，请在设置中配置备份基础 URL。', unavailable: '路由器未连接。' };
+      note.textContent = (e?.code ? (isChinese() ? zhErrors[e.code] : ERRORS[e.code]) : '') || e?.message || translate('Backup request failed', '备份请求失败');
+      note.style.color = 'var(--accent-warn)';
+    }
+  });
+
+  // Frequency drives whether the time applies at all, so re-evaluate as it
+  // changes rather than only on the next payload from the server.
+  document.addEventListener('change', (ev) => {
+    const t = ev.target as HTMLElement | null;
+    if (!t) return;
+    if (t.id === 'bkSchedule' || t.id === 'bkTime') { syncTime(state); return; }
+
+    // CHANGE, not click: a checkbox toggled by keyboard has to count too.
+    if (t.id === 'bkPickAll') {
+      const on = (t as HTMLInputElement).checked;
+      pickBoxes().forEach((b) => {
+        b.checked = on;
+        const id = Number(b.getAttribute('data-bk-pick'));
+        if (on) picked.add(id); else picked.delete(id);
+        b.closest('tr')?.classList.toggle('bk-row-picked', on);
+      });
+      syncBulk();
+      return;
+    }
+    if (t.hasAttribute?.('data-bk-pick')) {
+      const id = Number(t.getAttribute('data-bk-pick'));
+      const on = (t as HTMLInputElement).checked;
+      if (on) picked.add(id); else picked.delete(id);
+      t.closest('tr')?.classList.toggle('bk-row-picked', on);
+      syncBulk();
+    }
+  });
+
+  document.addEventListener('click', (ev) => {
+    const btn = (ev.target as HTMLElement | null)?.closest?.('[data-bk-diff]');
+    if (!btn) return;
+    ev.preventDefault();
+    socket.emit('backups:diff', { id: Number(btn.getAttribute('data-bk-diff')) });
+  });
+
+  document.addEventListener('mikrodash:pagechange', (ev) => {
+    if ((ev as CustomEvent).detail === 'backups') socket.emit('backups:list');
+  });
+
+  // A router switch makes every row on screen belong to the wrong device.
+  socket.on('router:switched', () => {
+    state = null;
+    busy = false;
+    // And every selected id belongs to the device we just left. The server
+    // rejects a foreign id anyway (the row lookup is router-scoped), but leaving
+    // them ticked would show Delete armed for rows no longer on screen.
+    picked.clear();
+    if (isVisible('backups')) socket.emit('backups:list');
+  });
+}
