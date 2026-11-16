@@ -31,31 +31,33 @@
 
 import { esc, el } from '../dom';
 import { translate } from '../language';
-import type { LanPayload } from '../gen/payloads';
+import type { LanPayload, WANPayload } from '../gen/payloads';
 
 /** The live app's `DOT`, a middle dot separator. */
 const DOT = '·';
 
-export function renderNetworks(data: LanPayload): void {
-  const ifaceEl = el('netInternetIfaces');
-  if (ifaceEl) {
-    const ifaces = data.internetIfaces || [];
-    if (!ifaces.length) {
-      ifaceEl.innerHTML = '<div class="empty-state">' + translate('No internet interfaces detected', '未检测到互联网接口') + '</div>';
-    } else {
-      ifaceEl.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.25rem">' +
-        ifaces.map((f) =>
-          '<div class="net-wan-row">' +
-            '<div class="net-field-label">' + esc(f.name) + '</div>' +
-            // The prefix length is dropped for display, and `|| '-'` catches
-            // BOTH an absent ip and one that is an empty string: `''.split('/')`
-            // is `['']`, so the split alone would render an empty cell.
-            '<div class="net-field-val">' + esc((f.ip || '').split('/')[0] || '-') + '</div>' +
-          '</div>').join('') +
-        '</div>';
-    }
+/** Render the same selected uplinks as the WAN page. */
+export function renderNetworkWan(data: WANPayload): void {
+  const host = el('netInternetIfaces');
+  if (!host) return;
+  const ifaces = data.wans || [];
+  if (!ifaces.length && (data.denied || !data.available)) {
+    host.innerHTML = '<div class="empty-state">' + translate('WAN information is unavailable', '无法获取 WAN 接口信息') + '</div>';
+    return;
   }
+  host.innerHTML = ifaces.length
+    ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.25rem">' + ifaces.map((f) =>
+      '<div class="net-wan-row"><div class="net-field-label">' + esc(f.name) + '</div>' +
+      '<div class="net-field-val">' + esc((f.address || '').split('/')[0] || '-') + '</div></div>').join('') + '</div>'
+    : '<div class="empty-state">' + translate('No WAN interfaces selected or detected', '未选择或检测到 WAN 接口') + '</div>';
+}
 
+export function clearNetworkWan(): void {
+  const host = el('netInternetIfaces');
+  if (host) host.textContent = translate('Waiting for WAN data…', '正在等待 WAN 数据…');
+}
+
+export function renderNetworks(data: LanPayload): void {
   const nets = (data && data.networks) ? data.networks : [];
   const lanOverview = el('lanOverview');
   if (!lanOverview) return;

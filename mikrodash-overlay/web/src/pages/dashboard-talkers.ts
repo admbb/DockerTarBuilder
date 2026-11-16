@@ -26,7 +26,7 @@ export function renderTalkers(data: TalkersPayload): void {
   const devices = data.devices || [];
   if (!devices.length) {
     table.innerHTML = '<tr><td colspan="4" class="empty-state">' +
-      (data.available === false ? translate('Kid Control is not available on this router', '此路由器不支持 Kid Control') : translate('No devices', '暂无设备')) +
+      (data.available === false ? translate('Kid Control is not available on this router', '此路由器不支持 Kid Control，无法读取设备速率') : translate('No Kid Control devices with rate data', '暂无 Kid Control 设备流量数据')) +
       '</td></tr>';
     return;
   }
