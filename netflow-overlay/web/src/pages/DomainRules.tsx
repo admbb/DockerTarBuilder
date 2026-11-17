@@ -16,6 +16,7 @@ export function DomainRules() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [unknown, setUnknown] = useState<HistoricalDomain[]>([]);
   const [domainSearch, setDomainSearch] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [builtin, setBuiltin] = useState<BuiltinRule[]>([]);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [form, setForm] = useState<Rule>(empty);
@@ -23,6 +24,7 @@ export function DomainRules() {
   const [busy, setBusy] = useState(false);
   const rankedDomains = useMemo(() => unknown.filter(item => item.domain.toLowerCase().includes(domainSearch.trim().toLowerCase())), [unknown, domainSearch]);
   const maxDomainBytes = Math.max(1, ...unknown.map(item => item.up + item.down));
+  const rankedTotal = unknown.reduce((sum, item) => sum + item.up + item.down, 0);
   const refresh = async () => {
     const [a, r, u, b] = await Promise.allSettled([get<App[]>("/api/v1/domains/apps"), get<Rule[]>("/api/v1/domains/rules"), get<{items: HistoricalDomain[]}>("/api/v1/domains/unknown"), get<BuiltinRule[]>("/api/v1/domains/builtin")]);
     if (a.status === "fulfilled") setApps(a.value);
@@ -52,9 +54,11 @@ export function DomainRules() {
     try { setTestResult(await post<TestResult>("/api/v1/domains/rules/test", {domain: form.domain})); }
     catch (e) { setError(displayError((e as Error).message)); } finally { setBusy(false); }
   };
-  return <>
-    <div className="page-head"><div><h1 className="page-title">{t("应用识别规则", "Application recognition rules")}</h1>
-      <p className="page-sub">{t("为已观测的域名配置应用归属；只影响新产生的流量。", "Assign observed domains to applications. Only new traffic is affected.")}</p></div></div>
+  return <div className="domain-page">
+    <div className="page-head domain-heading"><div><h1 className="page-title">{t("域名流量排行", "Domain traffic ranking")}</h1>
+      <p className="page-sub">{t("查看历史未归类域名的流量分布与连接情况", "Explore historical unclassified domain traffic and connections")}</p></div><button type="button" className="btn" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}>{settingsOpen ? t("收起规则设置", "Close rule settings") : t("规则与来源设置", "Rule and source settings")}</button></div>
+    <div className="domain-summary"><div className="card"><div className="card-note">{t("排行流量合计", "Ranked traffic")}</div><strong>{bytes(rankedTotal)}</strong><div className="card-note">{t("最近约 7 天 · 前 50 项", "About 7 days · top 50")}</div></div><div className="card"><div className="card-note">{t("排行域名", "Ranked domains")}</div><strong>{unknown.length}</strong><div className="card-note">{t("按历史流量排序", "Ranked by historical traffic")}</div></div><div className="card"><div className="card-note">{t("流量最高的域名", "Top domain")}</div><strong className="domain-top-name">{unknown[0]?.domain ?? "—"}</strong><div className="card-note">{unknown[0] ? bytes(unknown[0].up + unknown[0].down) : t("暂无数据", "No data")}</div></div></div>
+    {settingsOpen && <div className="domain-settings" id="domain-settings">
     <div className="card" style={{marginBottom: 16}}>
       <div className="card-title">{form.id ? t("编辑规则", "Edit rule") : t("添加规则", "Add rule")}</div>
       <p className="card-note">{t("候选域名未知、冲突或不完整时会保留原有目标分类。DNS 缓存只能提供推断，并非逐连接证据。", "Unknown, conflicting or incomplete candidates retain their original destination. DNS cache attribution is an inference, not per-connection proof.")}</p>
@@ -77,11 +81,13 @@ export function DomainRules() {
       {rules.length === 0 ? <p className="card-note">{t("暂无用户规则。已启用少量经核验的内置规则，其余样例尚未启用。", "No user rules. A small set of verified built-in rules is enabled; the remaining examples are inactive.")}</p> :
       <div style={{overflowX:"auto"}}><table style={{width:"100%",textAlign:"left",marginTop:12}}><thead><tr><th>{t("域名", "Domain")}</th><th>{t("匹配", "Match")}</th><th>{t("应用", "Application")}</th><th>{t("状态", "Status")}</th><th>{t("操作", "Actions")}</th></tr></thead><tbody>{rules.map(r => <tr key={r.id}><td>{r.domain}</td><td>{r.match === "exact" ? t("完整域名", "Exact") : t("含子域名", "Suffix")}</td><td>{r.exclude ? t("排除", "Excluded") : (apps.find(a => a.id === r.appId)?.name ?? r.appId)}</td><td>{r.enabled ? t("已启用", "Enabled") : t("已停用", "Disabled")}</td><td><button type="button" className="btn small" onClick={() => setForm(r)}>{t("编辑", "Edit")}</button>{" "}<button type="button" className="btn small" disabled={busy} onClick={() => remove(r)}>{t("删除", "Delete")}</button></td></tr>)}</tbody></table></div>}
     </div>
-    <div className="card" style={{marginTop:16}}><div className="card-title">{t("历史未归类域名排行", "Historical unclassified domains")}</div>
+    </div>}
+    <div className="domain-highlights">{unknown.slice(0, 6).map((item, index) => <div className="card domain-highlight" key={item.domain}><div className="domain-highlight-head"><span className="domain-badge">{index + 1}</span><span className="mono domain-highlight-name" title={item.domain}>{item.domain}</span></div><strong>{bytes(item.up + item.down)}</strong><div className="card-note"><span className="domain-down">↓ {bytes(item.down)}</span>　<span className="domain-up">↑ {bytes(item.up)}</span></div><div className="card-note">{item.connections.toLocaleString()} {t("次连接", "connections")}</div></div>)}</div>
+    <div className="card domain-ranking" style={{marginTop:16}}><div className="card-title">{t("历史未归类域名排行", "Historical unclassified domains")}</div>
       <p className="card-note">{t("最近约 7 天、按小时汇总的域名目的地，最多显示 50 项。历史记录不会因新规则重新分类；这里是归并后的域名，不是完整 DNS 查询记录。", "Up to 50 domain destinations from approximately the last 7 days, aggregated hourly. New rules do not reclassify history; names are grouped domains, not a complete DNS query log.")}</p>
       <label className="field" style={{marginTop:12,maxWidth:360}}><span>{t("搜索排行中的域名", "Search ranked domains")}</span><input className="input" type="search" value={domainSearch} onChange={e => setDomainSearch(e.target.value)} placeholder={t("输入域名", "Enter a domain")} /></label>
       {rankedDomains.length === 0 ? <p className="card-note">{unknown.length ? t("没有匹配的域名。", "No matching domains.") : t("暂无历史域名流量。", "No historical domain traffic.")}</p> :
-        <div style={{overflowX:"auto"}}><table className="tbl" style={{width:"100%",marginTop:12}}><thead><tr><th>{t("排名 / 域名", "Rank / domain")}</th><th>{t("流量分布", "Traffic")}</th><th className="num">{t("下载", "Download")}</th><th className="num">{t("上传", "Upload")}</th><th className="num">{t("连接数", "Connections")}</th><th>{t("操作", "Action")}</th></tr></thead><tbody>{rankedDomains.map(item => { const total = item.up + item.down; const originalRank = unknown.indexOf(item) + 1; return <tr key={item.domain}><td><span className="dim">{originalRank}. </span><span className="mono">{item.domain}</span></td><td><span className="rank-track" aria-label={`${t("下载", "Download")}: ${bytes(item.down)}, ${t("上传", "Upload")}: ${bytes(item.up)}`}><span className="rank-bar" style={{width: `${Math.max(total ? 1.5 : 0, total / maxDomainBytes * 100)}%`}}><span className="rank-seg down" style={{flexBasis: `${total ? item.down / total * 100 : 0}%`}} /><span className="rank-seg up" style={{flexBasis: `${total ? item.up / total * 100 : 0}%`}} /></span></span><span className="dim">{bytes(total)}</span></td><td className="num">{bytes(item.down)}</td><td className="num">{bytes(item.up)}</td><td className="num">{item.connections.toLocaleString()}</td><td><button className="btn small" type="button" onClick={() => { setForm({...empty(),domain:item.domain}); window.scrollTo({top:0,behavior:"smooth"}); }}>{t("添加规则", "Add rule")}</button></td></tr>; })}</tbody></table></div>}
+        <div style={{overflowX:"auto"}}><table className="tbl" style={{width:"100%",marginTop:12}}><thead><tr><th>{t("排名 / 域名", "Rank / domain")}</th><th>{t("流量分布", "Traffic")}</th><th className="num">{t("下载", "Download")}</th><th className="num">{t("上传", "Upload")}</th><th className="num">{t("连接数", "Connections")}</th><th>{t("操作", "Action")}</th></tr></thead><tbody>{rankedDomains.map(item => { const total = item.up + item.down; const originalRank = unknown.indexOf(item) + 1; return <tr key={item.domain}><td><span className="dim">{originalRank}. </span><span className="mono">{item.domain}</span></td><td><span className="rank-track" aria-label={`${t("下载", "Download")}: ${bytes(item.down)}, ${t("上传", "Upload")}: ${bytes(item.up)}`}><span className="rank-bar" style={{width: `${Math.max(total ? 1.5 : 0, total / maxDomainBytes * 100)}%`}}><span className="rank-seg down" style={{flexBasis: `${total ? item.down / total * 100 : 0}%`}} /><span className="rank-seg up" style={{flexBasis: `${total ? item.up / total * 100 : 0}%`}} /></span></span><span className="dim">{bytes(total)}</span></td><td className="num">{bytes(item.down)}</td><td className="num">{bytes(item.up)}</td><td className="num">{item.connections.toLocaleString()}</td><td><button className="btn small" type="button" onClick={() => { setForm({...empty(),domain:item.domain}); setSettingsOpen(true); window.setTimeout(() => document.getElementById("domain-settings")?.scrollIntoView({behavior:"smooth"}), 0); }}>{t("添加规则", "Add rule")}</button></td></tr>; })}</tbody></table></div>}
     </div>
-  </>;
+  </div>;
 }
