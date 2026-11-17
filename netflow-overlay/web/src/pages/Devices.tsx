@@ -7,9 +7,9 @@ import { Card, Empty, ErrorNote, PageHead, RangeControl } from "../components/Co
 import { IconRouter, IconSearch } from "../components/Icons";
 import { RenameDevice } from "../components/Rename";
 import { Sparkline } from "../components/Sparkline";
-import { ui } from "../lib/i18n";
+import { isChinese, ui } from "../lib/i18n";
 
-type SortKey = "volume" | "live" | "name" | "seen";
+type SortKey = "volume" | "live" | "name" | "seen" | "connections";
 
 export function Devices() {
   const { range } = useView();
@@ -23,7 +23,7 @@ export function Devices() {
     const needle = q.trim().toLowerCase();
     const list = (res.data?.devices ?? []).filter((d) =>
       !needle || `${d.name} ${d.hostname} ${d.mac} ${d.vendor} ${d.ips.join(" ")}`.toLowerCase().includes(needle));
-    const key = (d: DeviceInfo) => sort === "volume" ? d.down + d.up : sort === "live" ? d.liveDown + d.liveUp : sort === "seen" ? d.lastSeen : 0;
+    const key = (d: DeviceInfo) => sort === "volume" ? d.down + d.up : sort === "live" ? d.liveDown + d.liveUp : sort === "seen" ? d.lastSeen : sort === "connections" ? d.conns : 0;
     return list.sort((a, b) => sort === "name" ? a.name.localeCompare(b.name) : key(b) - key(a) || a.name.localeCompare(b.name));
   }, [res.data, sort, q]);
   const maxVolume = Math.max(1, ...devices.map((d) => d.down + d.up));
@@ -54,6 +54,7 @@ export function Devices() {
                 {th("name", "Device", false)}
                 <th>Address</th>
                 {th("live", "Now")}
+                {th("connections", isChinese() ? `连接数（${r}）` : `Connections (${r})`)}
                 {th("volume", `Volume, ${r}`)}
                 <th>Trend</th>
                 {th("seen", "Last seen")}
@@ -83,6 +84,7 @@ export function Devices() {
                         </span>
                       ) : <span className="dim">idle</span>}
                     </td>
+                    <td className="num"><span>{d.conns.toLocaleString()}</span><span className="dim block">{isChinese() ? "当前" : "Live"} {d.liveConns.toLocaleString()}</span></td>
                     <td className="num">
                       <span className="vol">
                         <span className="vol-text">{bytes(total)}</span>

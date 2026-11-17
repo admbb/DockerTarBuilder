@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { del, get, post, put } from "../lib/api";
 import { displayError, isChinese } from "../lib/i18n";
 import { bytes } from "../lib/format";
@@ -15,11 +15,14 @@ export function DomainRules() {
   const [apps, setApps] = useState<App[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
   const [unknown, setUnknown] = useState<HistoricalDomain[]>([]);
+  const [domainSearch, setDomainSearch] = useState("");
   const [builtin, setBuiltin] = useState<BuiltinRule[]>([]);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [form, setForm] = useState<Rule>(empty);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const rankedDomains = useMemo(() => unknown.filter(item => item.domain.toLowerCase().includes(domainSearch.trim().toLowerCase())), [unknown, domainSearch]);
+  const maxDomainBytes = Math.max(1, ...unknown.map(item => item.up + item.down));
   const refresh = async () => {
     const [a, r, u, b] = await Promise.allSettled([get<App[]>("/api/v1/domains/apps"), get<Rule[]>("/api/v1/domains/rules"), get<{items: HistoricalDomain[]}>("/api/v1/domains/unknown"), get<BuiltinRule[]>("/api/v1/domains/builtin")]);
     if (a.status === "fulfilled") setApps(a.value);
@@ -76,8 +79,9 @@ export function DomainRules() {
     </div>
     <div className="card" style={{marginTop:16}}><div className="card-title">{t("历史未归类域名排行", "Historical unclassified domains")}</div>
       <p className="card-note">{t("最近约 7 天、按小时汇总的域名目的地，最多显示 50 项。历史记录不会因新规则重新分类；这里是归并后的域名，不是完整 DNS 查询记录。", "Up to 50 domain destinations from approximately the last 7 days, aggregated hourly. New rules do not reclassify history; names are grouped domains, not a complete DNS query log.")}</p>
-      {unknown.length === 0 ? <p className="card-note">{t("暂无历史域名流量。", "No historical domain traffic.")}</p> :
-        <div style={{overflowX:"auto"}}><table style={{width:"100%",textAlign:"left",marginTop:12}}><thead><tr><th>{t("域名", "Domain")}</th><th>{t("下载", "Download")}</th><th>{t("上传", "Upload")}</th><th>{t("连接数", "Connections")}</th><th>{t("操作", "Action")}</th></tr></thead><tbody>{unknown.map(item => <tr key={item.domain}><td>{item.domain}</td><td>{bytes(item.down)}</td><td>{bytes(item.up)}</td><td>{item.connections}</td><td><button className="btn small" type="button" onClick={() => setForm({...empty(),domain:item.domain})}>{t("添加规则", "Add rule")}</button></td></tr>)}</tbody></table></div>}
+      <label className="field" style={{marginTop:12,maxWidth:360}}><span>{t("搜索排行中的域名", "Search ranked domains")}</span><input className="input" type="search" value={domainSearch} onChange={e => setDomainSearch(e.target.value)} placeholder={t("输入域名", "Enter a domain")} /></label>
+      {rankedDomains.length === 0 ? <p className="card-note">{unknown.length ? t("没有匹配的域名。", "No matching domains.") : t("暂无历史域名流量。", "No historical domain traffic.")}</p> :
+        <div style={{overflowX:"auto"}}><table className="tbl" style={{width:"100%",marginTop:12}}><thead><tr><th>{t("排名 / 域名", "Rank / domain")}</th><th>{t("流量分布", "Traffic")}</th><th className="num">{t("下载", "Download")}</th><th className="num">{t("上传", "Upload")}</th><th className="num">{t("连接数", "Connections")}</th><th>{t("操作", "Action")}</th></tr></thead><tbody>{rankedDomains.map(item => { const total = item.up + item.down; const originalRank = unknown.indexOf(item) + 1; return <tr key={item.domain}><td><span className="dim">{originalRank}. </span><span className="mono">{item.domain}</span></td><td><span className="rank-track" aria-label={`${t("下载", "Download")}: ${bytes(item.down)}, ${t("上传", "Upload")}: ${bytes(item.up)}`}><span className="rank-bar" style={{width: `${Math.max(total ? 1.5 : 0, total / maxDomainBytes * 100)}%`}}><span className="rank-seg down" style={{flexBasis: `${total ? item.down / total * 100 : 0}%`}} /><span className="rank-seg up" style={{flexBasis: `${total ? item.up / total * 100 : 0}%`}} /></span></span><span className="dim">{bytes(total)}</span></td><td className="num">{bytes(item.down)}</td><td className="num">{bytes(item.up)}</td><td className="num">{item.connections.toLocaleString()}</td><td><button className="btn small" type="button" onClick={() => { setForm({...empty(),domain:item.domain}); window.scrollTo({top:0,behavior:"smooth"}); }}>{t("添加规则", "Add rule")}</button></td></tr>; })}</tbody></table></div>}
     </div>
   </>;
 }

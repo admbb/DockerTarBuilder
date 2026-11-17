@@ -4,7 +4,7 @@ import { ago, bytes, count, dayTime, duration, pct, rate } from "../lib/format";
 import { useFetch, useNow } from "../lib/hooks";
 import { Card, ErrorNote, PageHead } from "../components/Controls";
 import { IconCheck, IconCopy, IconCritical, IconWarn } from "../components/Icons";
-import { ui } from "../lib/i18n";
+import { isChinese, ui } from "../lib/i18n";
 
 function KV({ rows }: { rows: [string, ReactNode][] }) {
   return (
@@ -61,11 +61,17 @@ export function StatusPage() {
   const script = setupScript(s);
   const copy = () => navigator.clipboard?.writeText(script).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); });
   const clock = s.clocks?.[0];
+  const healthWarnings: string[] = [];
+  if (s.now - e.started > 120 && s.udp.packets === 0) healthWarnings.push(isChinese() ? "启动两分钟后仍未收到 UDP 流量数据包，请检查 RouterOS 导出目标和网络。" : "No UDP flow packets received after two minutes; check the router export target and network.");
+  if (e.exportAge > 120) healthWarnings.push(isChinese() ? `超过 ${Math.floor(e.exportAge)} 秒未收到流量记录。` : `No flow records for ${Math.floor(e.exportAge)} seconds.`);
+  if (e.apiEnabled && !e.apiUp) healthWarnings.push(isChinese() ? "RouterOS API 未连接。" : "RouterOS API is disconnected.");
+  if (s.store.maxBytes > 0 && s.store.bytes / s.store.maxBytes >= 0.8) healthWarnings.push(isChinese() ? `数据库已达到容量上限的 ${pct(s.store.bytes / s.store.maxBytes, 0)}。` : `Database has reached ${pct(s.store.bytes / s.store.maxBytes, 0)} of its configured limit.`);
 
   return (
     <div className="page">
       <PageHead title="Status" sub={`${s.app} ${s.version} · running for ${duration(s.now - e.started)}`} />
       {res.error && <ErrorNote message={res.error} />}
+      {healthWarnings.length > 0 && <div className="card" role="alert" style={{marginBottom:16}}><div className="card-title">{isChinese() ? "采集健康提醒" : "Collector health warnings"}</div><ul>{healthWarnings.map(warning => <li key={warning}>{warning}</li>)}</ul><p className="card-note">{isChinese() ? "这些提示根据当前状态生成，不会发送通知或保存为告警事件。" : "These warnings reflect current status; they are not sent as notifications or stored as alert events."}</p></div>}
 
       <div className="grid-2">
         <div className="stack">

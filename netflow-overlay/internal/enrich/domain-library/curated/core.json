@@ -14,9 +14,10 @@
       "domain": "youtube-nocookie.com",
       "match": "suffix",
       "appId": "youtube",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/youtube"
     },
     {
       "domain": "netflix.com",
@@ -141,6 +142,123 @@
       "source": "curated",
       "confidence": "high",
       "enabled": true
+    },
+    {
+      "domain": "netflix.net",
+      "match": "suffix",
+      "appId": "netflix",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/netflix"
+    },
+    {
+      "domain": "nflxvideo.net",
+      "match": "suffix",
+      "appId": "netflix",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/netflix"
+    },
+    {
+      "domain": "nflximg.net",
+      "match": "suffix",
+      "appId": "netflix",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/netflix"
+    },
+    {
+      "domain": "youtu.be",
+      "match": "suffix",
+      "appId": "youtube",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/youtube"
+    },
+    {
+      "domain": "youtubekids.com",
+      "match": "suffix",
+      "appId": "youtube",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/youtube"
+    },
+    {
+      "domain": "b23.tv",
+      "match": "suffix",
+      "appId": "bilibili",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/bilibili"
+    },
+    {
+      "domain": "biliapi.net",
+      "match": "suffix",
+      "appId": "bilibili",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/bilibili"
+    },
+    {
+      "domain": "bilibili.cn",
+      "match": "suffix",
+      "appId": "bilibili",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/bilibili"
+    },
+    {
+      "domain": "spotifycdn.com",
+      "match": "suffix",
+      "appId": "spotify",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/spotify"
+    },
+    {
+      "domain": "spotifycdn.net",
+      "match": "suffix",
+      "appId": "spotify",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/spotify"
+    },
+    {
+      "domain": "spoti.fi",
+      "match": "suffix",
+      "appId": "spotify",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/spotify"
+    },
+    {
+      "domain": "githubstatus.com",
+      "match": "suffix",
+      "appId": "github",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/github"
+    },
+    {
+      "domain": "github.blog",
+      "match": "suffix",
+      "appId": "github",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/github"
     }
   ]
 }
