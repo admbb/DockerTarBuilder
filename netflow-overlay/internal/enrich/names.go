@@ -27,12 +27,14 @@ type nameEntry struct {
 // router's cache only holds a record until its TTL runs out, so the mapping is
 // accumulated across polls and kept.
 type Names struct {
-	mu         sync.RWMutex
-	byIP       map[netip.Addr]*nameEntry
-	candidates map[netip.Addr]*candidateEntry
-	max        int
-	matched    uint64
-	lookups    uint64
+	mu                       sync.RWMutex
+	byIP                     map[netip.Addr]*nameEntry
+	candidates               map[netip.Addr]*candidateEntry
+	candidateSaturation      int64
+	candidateSaturationDirty bool
+	max                      int
+	matched                  uint64
+	lookups                  uint64
 }
 
 // NewNames creates a table holding at most max addresses.
@@ -108,7 +110,8 @@ func (n *Names) evict() {
 	for a, e := range n.byIP {
 		if e.seen <= cut {
 			delete(n.byIP, a)
-			delete(n.candidates, a)
+			// Candidate evidence has its own expiry. Dropping it here could
+			// turn a previously ambiguous shared address into a false match.
 		}
 	}
 }

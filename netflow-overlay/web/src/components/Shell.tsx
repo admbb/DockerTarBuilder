@@ -11,6 +11,7 @@ const NAV = [
   { path: "/flows", label: "Flows", icon: IconFlows },
   { path: "/devices", label: "Devices", icon: IconDevices },
   { path: "/map", label: "Flow map", icon: IconMap },
+  { path: "/domains", label: "Application rules", icon: IconFlows },
   { path: "/alerts", label: "Alerts", icon: IconBell },
   { path: "/status", label: "Status", icon: IconServer },
 ];
@@ -50,7 +51,7 @@ export function Shell({ children, canLogout }: { children: ReactNode; canLogout:
             return (
               <a key={n.path} href={href(n.path)} className={"nav-link" + (active ? " active" : "")} aria-current={active ? "page" : undefined}>
                 <n.icon className="nav-icon" />
-                <span>{ui(n.label)}</span>
+                <span>{n.path === "/domains" && isChinese() ? "应用识别规则" : ui(n.label)}</span>
                 {n.path === "/alerts" && tick && tick.unacked > 0 && (
                   <span className={"nav-badge" + (tick.firing > 0 ? " firing" : "")}>{tick.unacked > 99 ? "99+" : tick.unacked}</span>
                 )}

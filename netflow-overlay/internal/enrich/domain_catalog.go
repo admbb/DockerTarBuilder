@@ -9,7 +9,7 @@ import (
 // The starter library is shipped inside the existing Go binary. It is data,
 // separate from the matcher, and never changes a user's mutable rules.
 //
-//go:embed domain-library/catalog/*.json domain-library/curated/*.json
+//go:embed domain-library/catalog/*.json domain-library/curated/*.json domain-library/V2FLY-LICENSE.txt
 var starterDomainLibrary embed.FS
 
 type DomainApplication struct {

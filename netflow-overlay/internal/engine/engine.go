@@ -157,6 +157,8 @@ type Engine struct {
 
 	lastExport             time.Time
 	domainCandidatesActive bool
+	domainConfigMu         sync.Mutex
+	flushMu                sync.Mutex
 	domainMatcher          *enrich.DomainMatcher
 	domainApps             map[string]string
 	exportCount            uint64
@@ -280,7 +282,17 @@ func New(opts Options, st *store.Store, topo *flow.Topology, names *enrich.Names
 					verified = append(verified, rule)
 				}
 			}
-			e.domainMatcher, catalogErr = enrich.BuildDomainMatcher(verified, ids)
+			userRules, userErr := st.LoadUserDomainRules()
+			if userErr != nil {
+				catalogErr = userErr
+			} else {
+				for _, rule := range userRules {
+					verified = append(verified, userDomainMatchRule(rule))
+				}
+			}
+			if catalogErr == nil {
+				e.domainMatcher, catalogErr = enrich.BuildDomainMatcher(verified, ids)
+			}
 		}
 		if catalogErr != nil {
 			log.Error("domain application catalog unavailable; using existing destination grouping", "err", catalogErr)
@@ -351,8 +363,12 @@ func (e *Engine) addFlow(f *flow.Flow, recv time.Time, after *[]func()) {
 		c = &conn{key: key, dev: dev, dest: dest, svc: svc, zone: f.Zone, remoteName: name, first: f.Start, last: f.End}
 		e.conns[key] = c
 		e.addRollup(f.Start, dev, dest, svc, f.Zone, store.RollupVal{Conns: 1})
+	} else {
+		// Keep one destination for the lifetime of a connection. Reassigning
+		// its cumulative bytes on rule changes would rewrite past history.
+		dest = c.dest
 	}
-	c.dev, c.dest = dev, dest // a name or MAC learned later applies from now on
+	c.dev = dev // MAC identity can still be learned after the connection starts.
 	if name != "" {
 		c.remoteName = name
 	}
@@ -672,6 +688,8 @@ func (e *Engine) Run(ctx context.Context) {
 
 // Flush writes everything accumulated since the last flush.
 func (e *Engine) Flush(now time.Time) {
+	e.flushMu.Lock()
+	defer e.flushMu.Unlock()
 	e.mu.Lock()
 	b := &store.Batch{Now: now.Unix(), Rollups: e.pending, Merges: e.merges, Tunnels: e.newTunnels}
 	e.pending, e.merges, e.newTunnels = map[store.RollupKey]store.RollupVal{}, nil, nil

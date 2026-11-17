@@ -14,24 +14,26 @@ import (
 )
 
 type DomainRule struct {
-	Domain     string `json:"domain"`
-	Match      string `json:"match"` // exact or suffix
-	AppID      string `json:"appId"`
-	Source     string `json:"source"`
-	Confidence string `json:"confidence"`
-	Exclude    bool   `json:"exclude"`
-	User       bool   `json:"user"`
-	Enabled    bool   `json:"enabled"`
+	Domain        string `json:"domain"`
+	Match         string `json:"match"` // exact or suffix
+	AppID         string `json:"appId"`
+	Source        string `json:"source"`
+	SourceVersion string `json:"sourceVersion,omitempty"`
+	Confidence    string `json:"confidence"`
+	Exclude       bool   `json:"exclude"`
+	User          bool   `json:"user"`
+	Enabled       bool   `json:"enabled"`
 }
 
 type DomainMatch struct {
-	AppID      string `json:"appId,omitempty"`
-	Domain     string `json:"domain,omitempty"`
-	Source     string `json:"source,omitempty"`
-	Confidence string `json:"confidence,omitempty"`
-	MatchedBy  string `json:"matchedBy,omitempty"`
-	Ambiguous  bool   `json:"ambiguous"`
-	Excluded   bool   `json:"excluded"`
+	AppID         string `json:"appId,omitempty"`
+	Domain        string `json:"domain,omitempty"`
+	Source        string `json:"source,omitempty"`
+	SourceVersion string `json:"sourceVersion,omitempty"`
+	Confidence    string `json:"confidence,omitempty"`
+	MatchedBy     string `json:"matchedBy,omitempty"`
+	Ambiguous     bool   `json:"ambiguous"`
+	Excluded      bool   `json:"excluded"`
 }
 
 type domainNode struct {
@@ -170,7 +172,7 @@ func (m *DomainMatcher) Match(host string) DomainMatch {
 	if best.rule.Exclude {
 		return DomainMatch{Domain: h, Excluded: true, Source: best.rule.Source}
 	}
-	return DomainMatch{AppID: best.rule.AppID, Domain: h, Source: best.rule.Source, Confidence: best.rule.Confidence, MatchedBy: best.rule.Match}
+	return DomainMatch{AppID: best.rule.AppID, Domain: h, Source: best.rule.Source, SourceVersion: best.rule.SourceVersion, Confidence: best.rule.Confidence, MatchedBy: best.rule.Match}
 }
 
 // MatchCandidates only attributes an IP if every observed name is known and

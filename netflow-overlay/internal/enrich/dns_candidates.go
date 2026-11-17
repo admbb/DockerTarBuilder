@@ -11,6 +11,10 @@ import (
 const candidateLimit = 16
 const candidateTTL = 24 * time.Hour
 
+// Persist observation times in conservative one-hour buckets. Rounding up can
+// extend the ambiguity window by at most an hour, never shorten it.
+const candidateTimestampBucket = int64(3600)
+
 type candidateEntry struct {
 	names    map[string]int64
 	overflow int64
@@ -36,7 +40,8 @@ func (n *Names) observeCandidates(records []DNSRecord, now time.Time) {
 			}
 		}
 	}
-	ts := now.Unix()
+	nowTS := now.Unix()
+	ts := (nowTS/candidateTimestampBucket + 1) * candidateTimestampBucket
 	for _, r := range records {
 		if r.Type != "A" && r.Type != "AAAA" {
 			continue
@@ -52,10 +57,18 @@ func (n *Names) observeCandidates(records []DNSRecord, now time.Time) {
 		}
 		e := n.candidates[ip]
 		if e == nil {
+			if len(n.candidates) >= n.max {
+				if n.candidateSaturation != ts {
+					n.candidateSaturation = ts
+					n.candidateSaturationDirty = true
+				}
+				continue
+			}
 			e = &candidateEntry{names: map[string]int64{}}
 			n.candidates[ip] = e
 		}
 		queue := []string{base}
+		queued := map[string]bool{base: true}
 		visited := map[string]bool{}
 		for len(queue) > 0 {
 			name := queue[0]
@@ -65,13 +78,17 @@ func (n *Names) observeCandidates(records []DNSRecord, now time.Time) {
 			}
 			visited[name] = true
 			if len(visited) > candidateLimit {
-				e.overflow = ts
-				e.dirty = true
+				if e.overflow != ts {
+					e.overflow = ts
+					e.dirty = true
+				}
 				break
 			}
 			if _, ok := e.names[name]; !ok && len(e.names) >= candidateLimit {
-				e.overflow = ts
-				e.dirty = true
+				if e.overflow != ts {
+					e.overflow = ts
+					e.dirty = true
+				}
 				continue
 			}
 			if old, ok := e.names[name]; !ok || ts != old {
@@ -79,13 +96,26 @@ func (n *Names) observeCandidates(records []DNSRecord, now time.Time) {
 			}
 			e.names[name] = ts
 			for _, alias := range aliases[name] {
-				if normalized, err := NormalizeDomain(alias); err == nil {
-					queue = append(queue, normalized)
+				if queued[alias] {
+					continue
 				}
+				if len(queued) >= candidateLimit {
+					if e.overflow != ts {
+						e.overflow = ts
+						e.dirty = true
+					}
+					break
+				}
+				queued[alias] = true
+				queue = append(queue, alias)
 			}
 		}
 	}
-	cutoff := ts - int64(candidateTTL.Seconds())
+	cutoff := nowTS - int64(candidateTTL.Seconds())
+	if n.candidateSaturation != 0 && n.candidateSaturation < cutoff {
+		n.candidateSaturation = 0
+		n.candidateSaturationDirty = true
+	}
 	for ip, e := range n.candidates {
 		for name, seen := range e.names {
 			if seen < cutoff {
@@ -120,7 +150,7 @@ func (n *Names) Candidates(ip netip.Addr, now time.Time) ([]string, bool) {
 		}
 	}
 	sort.Strings(names)
-	return names, len(names) == 0 || (e.overflow >= cutoff && e.overflow != 0)
+	return names, len(names) == 0 || (e.overflow >= cutoff && e.overflow != 0) || (n.candidateSaturation != 0 && n.candidateSaturation >= cutoff)
 }
 
 // CandidateRows snapshots dirty IPs. Empty-domain rows mark overflow; callers
@@ -129,6 +159,12 @@ func (n *Names) CandidateRows() map[string][]DNSCandidate {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	out := map[string][]DNSCandidate{}
+	if n.candidateSaturationDirty {
+		out["*"] = nil
+		if n.candidateSaturation != 0 {
+			out["*"] = []DNSCandidate{{IP: "*", Seen: n.candidateSaturation}}
+		}
+	}
 	for ip, e := range n.candidates {
 		if !e.dirty {
 			continue
@@ -151,6 +187,12 @@ func (n *Names) AckCandidateRows(snapshot map[string][]DNSCandidate) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for raw, rows := range snapshot {
+		if raw == "*" {
+			if (len(rows) == 0 && n.candidateSaturation == 0) || (len(rows) == 1 && rows[0].Seen == n.candidateSaturation) {
+				n.candidateSaturationDirty = false
+			}
+			continue
+		}
 		ip, err := netip.ParseAddr(raw)
 		if err != nil {
 			continue
@@ -185,6 +227,17 @@ func (n *Names) AckCandidateRows(snapshot map[string][]DNSCandidate) {
 }
 
 func (n *Names) RestoreCandidate(row DNSCandidate, now time.Time) {
+	if row.IP == "*" {
+		if row.Seen < now.Add(-candidateTTL).Unix() {
+			return
+		}
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		if row.Seen > n.candidateSaturation {
+			n.candidateSaturation = row.Seen
+		}
+		return
+	}
 	ip, err := netip.ParseAddr(row.IP)
 	if err != nil || row.Seen < now.Add(-candidateTTL).Unix() {
 		return
@@ -194,6 +247,13 @@ func (n *Names) RestoreCandidate(row DNSCandidate, now time.Time) {
 	defer n.mu.Unlock()
 	e := n.candidates[ip]
 	if e == nil {
+		if len(n.candidates) >= n.max {
+			if row.Seen > n.candidateSaturation {
+				n.candidateSaturation = row.Seen
+				n.candidateSaturationDirty = true
+			}
+			return
+		}
 		e = &candidateEntry{names: map[string]int64{}}
 		n.candidates[ip] = e
 	}
