@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { del, get, post, put } from "../lib/api";
 import { displayError, isChinese } from "../lib/i18n";
 import { bytes } from "../lib/format";
+import { ApplicationIcon } from "../components/ApplicationIcon";
 
 type App = { id: string; name: string; category: string };
 type Rule = { id: number; domain: string; match: "exact" | "suffix"; appId: string; exclude: boolean; enabled: boolean };
@@ -15,6 +16,7 @@ export function DomainRules() {
   const [apps, setApps] = useState<App[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
   const [unknown, setUnknown] = useState<HistoricalDomain[]>([]);
+  const [appRanking, setAppRanking] = useState<HistoricalDomain[]>([]);
   const [domainSearch, setDomainSearch] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [builtin, setBuiltin] = useState<BuiltinRule[]>([]);
@@ -26,12 +28,13 @@ export function DomainRules() {
   const maxDomainBytes = Math.max(1, ...unknown.map(item => item.up + item.down));
   const rankedTotal = unknown.reduce((sum, item) => sum + item.up + item.down, 0);
   const refresh = async () => {
-    const [a, r, u, b] = await Promise.allSettled([get<App[]>("/api/v1/domains/apps"), get<Rule[]>("/api/v1/domains/rules"), get<{items: HistoricalDomain[]}>("/api/v1/domains/unknown"), get<BuiltinRule[]>("/api/v1/domains/builtin")]);
+    const [a, r, u, b, ranking] = await Promise.allSettled([get<App[]>("/api/v1/domains/apps"), get<Rule[]>("/api/v1/domains/rules"), get<{items: HistoricalDomain[]}>("/api/v1/domains/unknown"), get<BuiltinRule[]>("/api/v1/domains/builtin"), get<{items: HistoricalDomain[]}>("/api/v1/domains/app-ranking")]);
     if (a.status === "fulfilled") setApps(a.value);
     if (r.status === "fulfilled") setRules(r.value);
     if (u.status === "fulfilled") setUnknown(u.value.items);
     if (b.status === "fulfilled") setBuiltin(b.value);
-    const failed = [a, r, u, b].find(result => result.status === "rejected");
+    if (ranking.status === "fulfilled") setAppRanking(ranking.value.items);
+    const failed = [a, r, u, b, ranking].find(result => result.status === "rejected");
     if (failed && failed.status === "rejected") setError(t("部分数据刷新失败：", "Some data could not be refreshed: ") + displayError(String(failed.reason?.message ?? failed.reason)));
   };
   useEffect(() => { void refresh(); }, []);
@@ -58,6 +61,7 @@ export function DomainRules() {
     <div className="page-head domain-heading"><div><h1 className="page-title">{t("域名流量排行", "Domain traffic ranking")}</h1>
       <p className="page-sub">{t("查看历史未归类域名的流量分布与连接情况", "Explore historical unclassified domain traffic and connections")}</p></div><button type="button" className="btn" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}>{settingsOpen ? t("收起规则设置", "Close rule settings") : t("规则与来源设置", "Rule and source settings")}</button></div>
     <div className="domain-summary"><div className="card"><div className="card-note">{t("排行流量合计", "Ranked traffic")}</div><strong>{bytes(rankedTotal)}</strong><div className="card-note">{t("最近约 7 天 · 前 50 项", "About 7 days · top 50")}</div></div><div className="card"><div className="card-note">{t("排行域名", "Ranked domains")}</div><strong>{unknown.length}</strong><div className="card-note">{t("按历史流量排序", "Ranked by historical traffic")}</div></div><div className="card"><div className="card-note">{t("流量最高的域名", "Top domain")}</div><strong className="domain-top-name">{unknown[0]?.domain ?? "—"}</strong><div className="card-note">{unknown[0] ? bytes(unknown[0].up + unknown[0].down) : t("暂无数据", "No data")}</div></div></div>
+    <section className="card application-ranking"><div className="card-title">{t("应用流量排行", "Application traffic ranking")}</div><p className="card-note">{t("最近约 7 天已归类为应用的流量；未识别域名不计入此排行。", "Application-classified traffic from approximately the last 7 days; unclassified domains are excluded.")}</p>{appRanking.length === 0 ? <p className="card-note">{t("暂无已识别的应用流量。规则生效后，新连接的数据会逐步显示。", "No classified application traffic yet. New connections will appear as matching rules take effect.")}</p> : <div className="application-grid">{appRanking.map((item, index) => <div className="application-item" key={item.domain}><div className="domain-highlight-head"><ApplicationIcon name={item.domain} /><span className="application-label" title={item.domain}>{item.domain}</span><span className="dim">#{index+1}</span></div><strong>{bytes(item.down+item.up)}</strong><div className="card-note"><span className="domain-down">↓ {bytes(item.down)}</span>　<span className="domain-up">↑ {bytes(item.up)}</span></div><div className="card-note">{item.connections.toLocaleString()} {t("次连接", "connections")}</div></div>)}</div>}</section>
     {settingsOpen && <div className="domain-settings" id="domain-settings">
     <div className="card" style={{marginBottom: 16}}>
       <div className="card-title">{form.id ? t("编辑规则", "Edit rule") : t("添加规则", "Add rule")}</div>
@@ -91,3 +95,4 @@ export function DomainRules() {
     </div>
   </div>;
 }
+

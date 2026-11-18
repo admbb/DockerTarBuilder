@@ -28,3 +28,24 @@ func (s *Store) HistoricalDomains(from, to int64, limit int) ([]HistoricalDomain
 	}
 	return result, rows.Err()
 }
+
+// HistoricalApplications contains only destinations actually classified as apps.
+func (s *Store) HistoricalApplications(from, to int64, limit int) ([]HistoricalDomain, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT d.label,SUM(r.up),SUM(r.down),SUM(r.conns) FROM rollup_1h r JOIN dests d ON d.id=r.dest WHERE d.kind='app' AND r.ts>=? AND r.ts<? GROUP BY d.id,d.label ORDER BY SUM(r.up)+SUM(r.down) DESC,d.label ASC LIMIT ?`, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]HistoricalDomain, 0)
+	for rows.Next() {
+		var row HistoricalDomain
+		if err := rows.Scan(&row.Domain, &row.Up, &row.Down, &row.Connections); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}

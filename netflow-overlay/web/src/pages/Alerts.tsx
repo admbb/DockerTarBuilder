@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { post, put, type AlertEvent, type Rule } from "../lib/api";
+import { del, post, put, type AlertEvent, type Rule } from "../lib/api";
 import { ago, dayTime, duration } from "../lib/format";
 import { href, useFetch, useNow } from "../lib/hooks";
 import { Card, ErrorNote, PageHead } from "../components/Controls";
@@ -123,18 +123,29 @@ export function Alerts() {
   const events = useFetch<{ events: AlertEvent[]; firing: number; unacked: number }>("/api/v1/alerts/events?limit=200", 10_000);
   const rulesRes = useFetch<{ rules: Rule[] }>("/api/v1/alerts/rules");
   const [rules, setRules] = useState<Rule[] | null>(null);
+  const [clearError, setClearError] = useState("");
+  const [clearing, setClearing] = useState(false);
   const now = useNow(5000);
   useEffect(() => { if (rulesRes.data) setRules(rulesRes.data.rules); }, [rulesRes.data]);
 
   const list = events.data?.events ?? [];
   const markRead = () => post("/api/v1/alerts/ack", { id: 0 }).then(events.reload);
+  const clearAll = async () => {
+    setClearing(true); setClearError("");
+    try { await del("/api/v1/alerts/events"); events.reload(); }
+    catch (e) { setClearError((e as Error).message); }
+    finally { setClearing(false); }
+  };
 
   return (
     <div className="page">
       <PageHead title="Alerts" sub={events.data ? (isChinese() ? `${events.data.firing} 条活动告警，${events.data.unacked} 条未读` : `${events.data.firing} active, ${events.data.unacked} unread`) : undefined}>
         <button type="button" className="btn" onClick={markRead} disabled={!events.data || events.data.unacked === 0}>Mark all read</button>
+        <button type="button" className="btn" onClick={clearAll} disabled={clearing || !list.length} title={isChinese() ? "删除全部告警；仍存在的异常可能再次出现" : "Delete all alerts; ongoing conditions may reappear"}>{isChinese() ? "一键删除告警" : "Delete all alerts"}</button>
       </PageHead>
       {events.error && <ErrorNote message={events.error} />}
+      {clearError && <ErrorNote message={clearError} />}
+      <p className="foot-note">{isChinese() ? "删除后，仍在发生的异常可能重新生成告警。" : "Ongoing conditions may generate new alerts after deletion."}</p>
       <div className="grid-2 wide-left">
         <Card title="Events" note="Newest first. Resolved events are kept for 30 days.">
           {list.length > 0 ? <EventList events={list} now={now} /> : (

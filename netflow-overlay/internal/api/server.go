@@ -96,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/v1/flows", s.handleFlows)
 	api("GET /api/v1/alerts/events", s.handleEvents)
 	api("POST /api/v1/alerts/ack", s.handleAck)
+	api("DELETE /api/v1/alerts/events", s.handleClearEvents)
 	api("GET /api/v1/alerts/rules", s.handleRules)
 	api("PUT /api/v1/alerts/rules/{type}", s.handleUpdateRule)
 	api("GET /api/v1/settings", s.handleSettings)
@@ -106,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/v1/domains/builtin", s.handleBuiltinDomainRules)
 	api("POST /api/v1/domains/rules/test", s.handleDomainRuleTest)
 	api("GET /api/v1/domains/unknown", s.handleDomainUnknown)
+	api("GET /api/v1/domains/app-ranking", s.handleApplicationRanking)
 	api("POST /api/v1/domains/rules", s.handleDomainRuleCreate)
 	api("PUT /api/v1/domains/rules/{id}", s.handleDomainRuleUpdate)
 	api("DELETE /api/v1/domains/rules/{id}", s.handleDomainRuleDelete)
@@ -445,6 +447,15 @@ func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleClearEvents(w http.ResponseWriter, r *http.Request) {
+	count, err := s.alerts.ClearEvents()
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"deleted": count})
 }
 
 func (s *Server) handleRules(w http.ResponseWriter, _ *http.Request) {

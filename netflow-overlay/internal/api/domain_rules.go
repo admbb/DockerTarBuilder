@@ -44,6 +44,17 @@ func (s *Server) handleDomainUnknown(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{"from": from, "to": to, "items": rows})
 }
+
+func (s *Server) handleApplicationRanking(w http.ResponseWriter, r *http.Request) {
+	to := time.Now().Truncate(time.Hour).Add(time.Hour).Unix()
+	from := to - 7*24*3600
+	rows, err := s.st.HistoricalApplications(from, to, 50)
+	if err != nil {
+		s.domainError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"from": from, "to": to, "items": rows})
+}
 func (s *Server) handleDomainRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := s.eng.DomainRules()
 	if err != nil {
