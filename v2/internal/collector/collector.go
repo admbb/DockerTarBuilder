@@ -58,9 +58,11 @@ func (c *Collector) Handle(ctx context.Context, exporter netip.Addr, received ti
 		ExportTime: message.ExportTime, TemplateTime: message.TemplateTime, TemplateChanged: !c.Decoder.Compatible(decoder),
 	}
 	if len(message.Records) > 0 {
-		packetInfo.BootMS = message.Records[0].SysInitMs
+		packetInfo.BootMS, packetInfo.BootMaxMS = message.Records[0].SysInitMs, message.Records[0].SysInitMs
 		for _, record := range message.Records {
-			if record.SysInitMs != packetInfo.BootMS {
+			packetInfo.BootMS = min(packetInfo.BootMS, record.SysInitMs)
+			packetInfo.BootMaxMS = max(packetInfo.BootMaxMS, record.SysInitMs)
+			if packetInfo.BootMaxMS-packetInfo.BootMS > ipfix.BootJitterMS {
 				return false, errors.New("IPFIX message mixes exporter boot times")
 			}
 		}

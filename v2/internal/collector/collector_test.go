@@ -41,16 +41,20 @@ func TestBootIsolationAndSequenceWrap(t *testing.T) {
 	check(ipfixFixture(4000, 0, true), true, false)
 	old := ipfixFixture(4000, 0, false, oldBoot)
 	check(old, true, false)
-	check(ipfixFixture(4001, math.MaxInt32, false, oldBoot), true, false)
+	check(ipfixFixture(4001, math.MaxInt32, false, oldBoot+1), true, false)
 	check(ipfixFixture(4002, math.MaxUint32-2, false, oldBoot), true, false)
 	// The two records occupy the last index and index zero of the next cycle.
-	crossing := ipfixFixture(4003, math.MaxUint32, false, oldBoot, oldBoot)
+	crossing := ipfixFixture(4003, math.MaxUint32, false, oldBoot+10, oldBoot)
 	check(crossing, true, false)
 	check(ipfixFixture(4002, math.MaxUint32-1, false, oldBoot), true, false)
 	check(ipfixFixture(4004, 0, false, oldBoot), false, true)
 	check(ipfixFixture(4004, 1, false, oldBoot), true, false)
 	check(ipfixFixture(4000, 2, false, oldBoot), false, true)
 	check(ipfixFixture(4005, 2, false, oldBoot, newBoot), false, true)
+	check(ipfixFixture(4005, 2, false, oldBoot+1, oldBoot+12), false, true)
+	check(ipfixFixture(4005, 2, false, oldBoot+11), false, true)
+	// A different wire boot sample must not bypass the existing sequence key.
+	check(ipfixFixture(4004, 1, false, oldBoot+10), false, true)
 
 	// The same boot/sequence state survives a process restart. The new
 	// collector must wait for templates, then reject old sequence ranges.
@@ -64,7 +68,7 @@ func TestBootIsolationAndSequenceWrap(t *testing.T) {
 	c = newCollector()
 	check(ipfixFixture(4006, 2, false, oldBoot), false, true)
 	check(ipfixFixture(4006, 2, true), true, false)
-	check(ipfixFixture(4006, 2, false, oldBoot), true, false)
+	check(ipfixFixture(4006, 2, false, oldBoot-10), true, false)
 	check(ipfixFixture(4010, 0, false, newBoot), false, true)
 	check(ipfixFixture(4010, 0, true), true, false)
 	check(ipfixFixture(4010, 0, false, newBoot), true, false)

@@ -14,6 +14,9 @@ import (
 	"sync"
 )
 
+// BootJitterMS is the observed bound of RouterOS IE 160 sampling jitter.
+const BootJitterMS uint64 = 10
+
 // Information element IDs used by the decoder.
 const (
 	ieOctetDelta     = 1

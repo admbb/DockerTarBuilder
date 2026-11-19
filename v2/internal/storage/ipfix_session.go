@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"netflow-plus-v2/internal/flow"
+	"netflow-plus-v2/internal/ipfix"
 )
 
 const sequenceCycle int64 = 1 << 32
@@ -21,6 +22,7 @@ type IPFIXPacket struct {
 	Domain, Sequence, RecordCount uint32
 	ExportTime, TemplateTime      uint32
 	BootMS                        uint64
+	BootMaxMS                     uint64
 	TemplateChanged               bool
 }
 
@@ -70,13 +72,22 @@ func recordIPFIXSequence(ctx context.Context, tx *sql.Tx, exporter, digest strin
 		}
 		return false, nil
 	}
-	if p.BootMS == 0 || p.BootMS > exportEnd {
+	bootMax := p.BootMaxMS
+	if bootMax == 0 {
+		bootMax = p.BootMS
+	}
+	if p.BootMS == 0 || bootMax < p.BootMS || bootMax-p.BootMS > ipfix.BootJitterMS || bootMax > exportEnd {
 		return false, errors.New("IPFIX data has no consistent exporter boot time")
 	}
-	if p.TemplateTime == 0 || uint64(p.TemplateTime)*1000+999 < p.BootMS {
+	if p.TemplateTime == 0 || uint64(p.TemplateTime)*1000+999 < bootMax {
 		return false, errors.New("IPFIX exporter boot needs refreshed templates")
 	}
-	newBoot := !exists || session.bootMS != p.BootMS
+	// Keep the original boot anchor as the durable range key. Comparing
+	// each packet to that anchor prevents rolling drift across epochs.
+	newBoot := !exists || max(bootMax, session.bootMS)-min(p.BootMS, session.bootMS) > ipfix.BootJitterMS
+	if exists && !newBoot && bootMax > uint64(session.exportTime)*1000+999 {
+		return false, errors.New("IPFIX boot sample could identify a new exporter session")
+	}
 	start := int64(p.Sequence)
 	if newBoot {
 		if exists && (p.BootMS <= uint64(session.exportTime)*1000+999 ||
@@ -114,7 +125,7 @@ func recordIPFIXSequence(ctx context.Context, tx *sql.Tx, exporter, digest strin
 	}
 	var overlaps bool
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT end_seq>? FROM ipfix_ranges WHERE exporter=? AND domain=? AND boot_ms=?
-		AND start_seq<? ORDER BY start_seq DESC LIMIT 1),0)`, start, exporter, p.Domain, p.BootMS, end).Scan(&overlaps)
+		AND start_seq<? ORDER BY start_seq DESC LIMIT 1),0)`, start, exporter, p.Domain, session.bootMS, end).Scan(&overlaps)
 	if err != nil {
 		return false, err
 	}
@@ -122,7 +133,7 @@ func recordIPFIXSequence(ctx context.Context, tx *sql.Tx, exporter, digest strin
 		return false, errors.New("overlapping IPFIX sequence range")
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO ipfix_ranges(exporter,domain,boot_ms,start_seq,end_seq,digest) VALUES(?,?,?,?,?,?)`,
-		exporter, p.Domain, p.BootMS, start, end, digest); err != nil {
+		exporter, p.Domain, session.bootMS, start, end, digest); err != nil {
 		return false, err
 	}
 	if end/sequenceCycle > session.nextSeq/sequenceCycle {
@@ -133,7 +144,7 @@ func recordIPFIXSequence(ctx context.Context, tx *sql.Tx, exporter, digest strin
 	_, err = tx.ExecContext(ctx, `INSERT INTO ipfix_sessions(exporter,domain,boot_ms,export_time,next_seq,wrap_time,legacy) VALUES(?,?,?,?,?,?,?)
 		ON CONFLICT(exporter,domain) DO UPDATE SET boot_ms=excluded.boot_ms,export_time=excluded.export_time,
 		next_seq=excluded.next_seq,wrap_time=excluded.wrap_time,legacy=excluded.legacy`,
-		exporter, p.Domain, p.BootMS, session.exportTime, session.nextSeq, session.wrapTime, session.legacy)
+		exporter, p.Domain, session.bootMS, session.exportTime, session.nextSeq, session.wrapTime, session.legacy)
 	return false, err
 }
 
