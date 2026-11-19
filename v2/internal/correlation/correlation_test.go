@@ -70,3 +70,49 @@ func TestMatchIntervalRejectsConflictDuringSegment(t *testing.T) {
 		t.Fatalf("later DNS response cannot cover earlier bytes: %+v", got)
 	}
 }
+
+func TestConflictingTTLUsesShortestAndMalformedChainCannotAuthorize(t *testing.T) {
+	at := time.Unix(2000, 0)
+	f := Flow{ClientIP: "192.168.1.10", RemoteIP: "8.8.8.8", Start: at.Add(time.Second)}
+	ev := DNSEvent{
+		ID: 1, ClientIP: f.ClientIP, At: at, ResponseOK: true,
+		Questions: []Question{{Name: "a.example", Type: "A"}},
+		Answers: []Answer{
+			{Name: "a.example", Type: "CNAME", Data: "edge.example", TTL: 20},
+			{Name: "a.example", Type: "CNAME", Data: "edge.example", TTL: 2},
+			{Name: "edge.example", Type: "A", Data: f.RemoteIP, TTL: 20},
+		},
+	}
+	rules := []Rule{{Domain: "a.example", AppID: "a"}}
+	if got := MatchInterval(f, at.Add(3*time.Second), []DNSEvent{ev}, rules, 60*time.Second); got.Reason != "dns_segment_not_covered" {
+		t.Fatalf("later duplicate must not extend the shorter TTL: %+v", got)
+	}
+	ev.Answers[1].Data = "other.example"
+	if got := Match(f, []DNSEvent{ev}, rules, 60*time.Second); got.Reason != "ambiguous_or_unknown" {
+		t.Fatalf("multiple CNAME targets cannot establish attribution: %+v", got)
+	}
+}
+
+func TestClockUncertaintyRequiresTemporalMarginAroundFlow(t *testing.T) {
+	at := time.Unix(2100, 0)
+	f := Flow{ClientIP: "192.168.1.10", RemoteIP: "8.8.8.8", Start: at}
+	ev := DNSEvent{
+		ID: 1, ClientIP: f.ClientIP, At: at.Add(-time.Second), ResponseOK: true,
+		Questions: []Question{{Name: "a.example", Type: "A"}},
+		Answers:   []Answer{{Name: "a.example", Type: "A", Data: f.RemoteIP, TTL: 30}},
+	}
+	rules := []Rule{{Domain: "a.example", AppID: "a"}}
+	end := at.Add(time.Second)
+	if got := MatchUncertainInterval(f, end, []DNSEvent{ev}, rules, 60*time.Second, 2*time.Second); got.Reason != "dns_segment_not_covered" {
+		t.Fatalf("response inside start margin: %+v", got)
+	}
+	ev.At = at.Add(-10 * time.Second)
+	ev.Answers[0].TTL = 12
+	if got := MatchUncertainInterval(f, end, []DNSEvent{ev}, rules, 60*time.Second, 2*time.Second); got.Reason != "dns_segment_not_covered" {
+		t.Fatalf("expiry inside end margin: %+v", got)
+	}
+	ev.Answers[0].TTL = 30
+	if got := MatchUncertainInterval(f, end, []DNSEvent{ev}, rules, 60*time.Second, 2*time.Second); got.AppID != "a" {
+		t.Fatalf("sufficient margin: %+v", got)
+	}
+}

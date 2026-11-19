@@ -4,6 +4,7 @@ package analysis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"netflow-plus-v2/internal/correlation"
 	"netflow-plus-v2/internal/storage"
@@ -11,13 +12,11 @@ import (
 )
 
 type Analyzer struct {
-	Store  *storage.Store
-	Source string
-	Window time.Duration
-	Rules  []correlation.Rule
-	// EvidenceComplete must only be set after verifying upstream ingestion
-	// completeness; a successful checkpoint alone does not prove it.
-	EvidenceComplete bool
+	Store       *storage.Store
+	Source      string
+	Window      time.Duration
+	Uncertainty time.Duration
+	Rules       []correlation.Rule
 }
 
 func (a *Analyzer) Analyze(ctx context.Context, flow correlation.Flow) (correlation.Result, error) {
@@ -31,22 +30,24 @@ func (a *Analyzer) AnalyzeInterval(ctx context.Context, flow correlation.Flow, e
 	if a.Window != 30*time.Second && a.Window != 60*time.Second && a.Window != 120*time.Second {
 		return correlation.Result{}, fmt.Errorf("invalid correlation window")
 	}
-	if flow.Start.IsZero() || end.Before(flow.Start) {
+	if flow.Start.IsZero() || end.Before(flow.Start) || a.Uncertainty < 0 {
 		return correlation.Result{}, fmt.Errorf("flow start is required")
 	}
-	start, checkpoint, err := a.Store.Coverage(ctx, a.Source)
+	status, err := a.Store.DNSStability(ctx, a.Source)
 	if err != nil {
 		return correlation.Result{}, err
 	}
-	if checkpoint < end.UnixMilli() || start > max(int64(0), flow.Start.Add(-a.Window).UnixMilli()) {
-		return correlation.Result{Reason: "dns_sync_incomplete"}, nil
+	earliest := flow.Start.Add(-a.Uncertainty)
+	until := end.Add(a.Uncertainty).UnixMilli()
+	from := max(int64(0), earliest.Add(-a.Window).UnixMilli())
+	if status.UntilMS <= until || status.FromMS > from {
+		return correlation.Result{Reason: "dns_rescan_pending"}, nil
 	}
-	if !a.EvidenceComplete {
-		return correlation.Result{Reason: "dns_completeness_unverified"}, nil
-	}
-	from := max(int64(0), flow.Start.Add(-a.Window).UnixMilli())
-	records, err := a.Store.EventsForClient(ctx, a.Source, flow.ClientIP, from, end.UnixMilli(), 10000)
+	records, err := a.Store.DNSCorrelationEvents(ctx, a.Source, flow.ClientIP, flow.RemoteIP, from, earliest.UnixMilli(), until, 10000)
 	if err != nil {
+		if errors.Is(err, storage.ErrDNSEvidenceLimit) {
+			return correlation.Result{Reason: "dns_evidence_limit"}, nil
+		}
 		return correlation.Result{}, err
 	}
 	events := make([]correlation.DNSEvent, 0, len(records))
@@ -57,5 +58,13 @@ func (a *Analyzer) AnalyzeInterval(ctx context.Context, flow correlation.Flow, e
 		}
 		events = append(events, event)
 	}
-	return correlation.MatchInterval(flow, end, events, a.Rules, a.Window), nil
+	// Retention can move the lower bound forward while evidence is queried.
+	after, err := a.Store.DNSStability(ctx, a.Source)
+	if err != nil {
+		return correlation.Result{}, err
+	}
+	if after.FromMS > status.FromMS || after.UntilMS <= until || after.EvidenceRevision != status.EvidenceRevision {
+		return correlation.Result{Reason: "dns_stability_changed"}, nil
+	}
+	return correlation.MatchUncertainInterval(flow, end, events, a.Rules, a.Window, a.Uncertainty), nil
 }

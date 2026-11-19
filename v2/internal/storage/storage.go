@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 	"netflow-plus-v2/internal/oxidns"
 )
 
 type Store struct{ db *sql.DB }
+
+var ErrDNSEvidenceLimit = errors.New("DNS evidence limit exceeded")
 
 func Open(path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
@@ -40,8 +43,12 @@ func Open(path string) (*Store, error) {
  CREATE INDEX IF NOT EXISTS ipfix_ranges_digest ON ipfix_ranges(exporter,digest);
  CREATE TABLE IF NOT EXISTS flow_segments(exporter TEXT NOT NULL, digest TEXT NOT NULL, ordinal INTEGER NOT NULL, received_ms INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, client_ip TEXT NOT NULL, remote_ip TEXT NOT NULL, local_port INTEGER NOT NULL, remote_port INTEGER NOT NULL, proto INTEGER NOT NULL, direction INTEGER NOT NULL, zone INTEGER NOT NULL, bytes INTEGER NOT NULL, time_quality TEXT NOT NULL, app_id TEXT NOT NULL DEFAULT '', attribution_reason TEXT NOT NULL DEFAULT 'pending', evidence TEXT NOT NULL DEFAULT '', PRIMARY KEY(exporter,digest,ordinal)) WITHOUT ROWID;
  CREATE INDEX IF NOT EXISTS flow_segments_received ON flow_segments(received_ms);
+ CREATE INDEX IF NOT EXISTS flow_segments_client_received ON flow_segments(client_ip,received_ms) WHERE zone=0;
  CREATE TABLE IF NOT EXISTS flow_hourly(exporter TEXT NOT NULL, bucket_ms INTEGER NOT NULL, client_ip TEXT NOT NULL, zone INTEGER NOT NULL, up INTEGER NOT NULL DEFAULT 0, down INTEGER NOT NULL DEFAULT 0, records INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(exporter,bucket_ms,client_ip,zone)) WITHOUT ROWID;
- CREATE TABLE IF NOT EXISTS sync_state(source TEXT PRIMARY KEY, started_ms INTEGER NOT NULL DEFAULT 0, completed_until_ms INTEGER NOT NULL) WITHOUT ROWID;`
+ CREATE TABLE IF NOT EXISTS sync_state(source TEXT PRIMARY KEY, started_ms INTEGER NOT NULL DEFAULT 0, completed_until_ms INTEGER NOT NULL) WITHOUT ROWID;
+ CREATE TABLE IF NOT EXISTS dns_stability(source TEXT PRIMARY KEY, stable_from_ms INTEGER NOT NULL, stable_until_ms INTEGER NOT NULL, scanned_from_ms INTEGER NOT NULL, scanned_until_ms INTEGER NOT NULL, completed_at_ms INTEGER NOT NULL) WITHOUT ROWID;
+ CREATE TABLE IF NOT EXISTS dns_evidence_revisions(source TEXT PRIMARY KEY, revision INTEGER NOT NULL) WITHOUT ROWID;
+ CREATE TABLE IF NOT EXISTS dns_scan_additions(source TEXT NOT NULL, introduced_after_ms INTEGER NOT NULL, created_ms INTEGER NOT NULL, PRIMARY KEY(source,introduced_after_ms,created_ms)) WITHOUT ROWID;`
 	if _, err = db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
@@ -154,6 +161,17 @@ func (s *Store) Checkpoint(ctx context.Context, source string) (int64, error) {
 // window. Truncation is an error, since missing observations could conceal
 // ambiguity on a shared IP.
 func (s *Store) EventsForClient(ctx context.Context, source, clientIP string, from, until int64, limit int) ([]oxidns.Record, error) {
+	return s.eventsForClient(ctx, source, clientIP, netip.Addr{}, from, from, from, until, limit)
+}
+
+// DNSCorrelationEvents includes older observations that could still expose a
+// conflict through a live address TTL anywhere in the retained stable history.
+func (s *Store) DNSCorrelationEvents(ctx context.Context, source, clientIP, remoteIP string, recentFrom, flowStart, until int64, limit int) ([]oxidns.Record, error) {
+	remote, _ := netip.ParseAddr(remoteIP)
+	return s.eventsForClient(ctx, source, clientIP, remote.Unmap(), 0, recentFrom, flowStart, until, limit)
+}
+
+func (s *Store) eventsForClient(ctx context.Context, source, clientIP string, remote netip.Addr, from, recentFrom, flowStart, until int64, limit int) ([]oxidns.Record, error) {
 	if source == "" || from < 0 || until < from || limit < 1 || limit > 10000 {
 		return nil, errors.New("invalid evidence query")
 	}
@@ -161,7 +179,16 @@ func (s *Store) EventsForClient(ctx context.Context, source, clientIP string, fr
 	if err != nil {
 		return nil, errors.New("invalid client IP")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM dns_events WHERE source=? AND client_ip=? AND created_ms>=? AND created_ms<=? ORDER BY created_ms,event_id LIMIT ?`, source, client.Unmap().String(), from, until, limit+1)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT payload FROM dns_events e
+WHERE source=? AND client_ip=? AND created_ms>=? AND created_ms<=?
+AND (created_ms>=? OR EXISTS (
+	SELECT 1 FROM json_each(e.payload,'$.answers_json') a
+	WHERE ((upper(json_extract(a.value,'$.rr_type'))='A' AND json_extract(a.value,'$.payload_text')=?)
+	   OR (upper(json_extract(a.value,'$.rr_type'))='AAAA' AND ?))
+	  AND e.created_ms + 1000*json_extract(a.value,'$.ttl') > ?
+))
+ORDER BY created_ms,event_id LIMIT ?`, source, client.Unmap().String(), from, until, recentFrom, remote.String(), remote.Is6(), flowStart, limit+1)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +196,7 @@ func (s *Store) EventsForClient(ctx context.Context, source, clientIP string, fr
 	result := make([]oxidns.Record, 0)
 	for rows.Next() {
 		if len(result) >= limit {
-			return nil, errors.New("DNS evidence limit exceeded")
+			return nil, ErrDNSEvidenceLimit
 		}
 		var payload string
 		var record oxidns.Record
@@ -187,6 +214,53 @@ func (s *Store) EventsForClient(ctx context.Context, source, clientIP string, fr
 // SavePage is idempotent. Reusing an event ID with different source content
 // fails closed instead of silently counting or overwriting a different event.
 func (s *Store) SavePage(ctx context.Context, source string, records []oxidns.Record) error {
+	return s.savePage(ctx, source, records, nil)
+}
+
+// SaveDNSScanPage journals newly observed timestamps so a failed scan and
+// retry cannot mistake a late arrival for evidence seen on the prior scan.
+func (s *Store) SaveDNSScanPage(ctx context.Context, source string, records []oxidns.Record, checkpoint int64) error {
+	err := s.savePage(ctx, source, records, &checkpoint)
+	if err == nil {
+		return nil
+	}
+	// On any page failure, its transaction has rolled back every insertion
+	// and rollback of the watermark. Invalidate from the earliest timestamp
+	// in the failed page or its conflicting stored record.
+	at := checkpoint
+	for _, record := range records {
+		at = min(at, max(int64(0), record.CreatedAtMS))
+	}
+	var conflict *dnsIdentityConflict
+	if errors.As(err, &conflict) {
+		at = min(at, conflict.at)
+	}
+	if at == checkpoint {
+		return err
+	}
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	tx, watermarkErr := s.db.BeginTx(rollbackCtx, nil)
+	if watermarkErr != nil {
+		return errors.Join(err, watermarkErr)
+	}
+	defer tx.Rollback()
+	if watermarkErr = lowerDNSWatermark(rollbackCtx, tx, source, at, checkpoint); watermarkErr == nil {
+		watermarkErr = tx.Commit()
+	}
+	return errors.Join(err, watermarkErr)
+}
+
+type dnsIdentityConflict struct {
+	source string
+	id, at int64
+}
+
+func (e *dnsIdentityConflict) Error() string {
+	return fmt.Sprintf("DNS event identity conflict: %s/%d", e.source, e.id)
+}
+
+func (s *Store) savePage(ctx context.Context, source string, records []oxidns.Record, checkpoint *int64) error {
 	if source == "" || len(source) > 128 {
 		return errors.New("invalid source")
 	}
@@ -195,6 +269,16 @@ func (s *Store) SavePage(ctx context.Context, source string, records []oxidns.Re
 		return err
 	}
 	defer tx.Rollback()
+	if checkpoint != nil {
+		var current int64
+		err := tx.QueryRowContext(ctx, `SELECT completed_until_ms FROM sync_state WHERE source=?`, source).Scan(&current)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if current != *checkpoint {
+			return fmt.Errorf("DNS scan checkpoint changed: expected %d, got %d", *checkpoint, current)
+		}
+	}
 	for _, r := range records {
 		if r.ID <= 0 || r.CreatedAtMS <= 0 {
 			return errors.New("invalid event identity")
@@ -218,13 +302,24 @@ func (s *Store) SavePage(ctx context.Context, source string, records []oxidns.Re
 		}
 		if n == 0 {
 			var existing string
-			if err = tx.QueryRowContext(ctx, `SELECT payload FROM dns_events WHERE source=? AND event_id=?`, source, r.ID).Scan(&existing); err != nil {
+			var existingAt int64
+			if err = tx.QueryRowContext(ctx, `SELECT payload,created_ms FROM dns_events WHERE source=? AND event_id=?`, source, r.ID).Scan(&existing, &existingAt); err != nil {
 				return err
 			}
 			if existing != string(payload) {
-				return fmt.Errorf("DNS event identity conflict: %s/%d", source, r.ID)
+				return &dnsIdentityConflict{source: source, id: r.ID, at: min(existingAt, r.CreatedAtMS)}
 			}
 		} else {
+			if checkpoint != nil && r.CreatedAtMS < *checkpoint {
+				if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO dns_scan_additions VALUES(?,?,?)`, source, *checkpoint, r.CreatedAtMS); err != nil {
+					return err
+				}
+				// A newly visible record in previously stable coverage
+				// invalidates it immediately, even if a later page fails.
+				if err := lowerDNSWatermark(ctx, tx, source, r.CreatedAtMS, *checkpoint); err != nil {
+					return err
+				}
+			}
 			bucket := (r.CreatedAtMS / 3600000) * 3600000
 			seen := make(map[string]bool)
 			for _, q := range r.Questions {

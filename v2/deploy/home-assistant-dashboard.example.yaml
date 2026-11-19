@@ -1,0 +1,24 @@
+# Lovelace dashboard: built-in cards, no extra frontend components required.
+type: vertical-stack
+cards:
+  - type: entities
+    title: 家庭网络观察
+    entities:
+      - entity: sensor.netflow_v2_dns_sync_time
+        name: DNS 同步时间
+      - entity: sensor.netflow_v2_app_traffic
+        name: 独立采集流量
+      - entity: sensor.netflow_v2_top_devices
+        name: 设备排行条目
+  - type: markdown
+    title: 应用流量排行（DNS 推断）
+    content: >-
+      {% set apps = state_attr('sensor.netflow_v2_app_traffic', 'items') or [] %}
+      {% for app in apps %}
+      **{{ loop.index }}. {{ app.name }}** — {{ (app.bytes / 1000000) | round(1) }} MB
+
+      {% else %}
+      暂无具备可用证据的应用流量。
+      {% endfor %}
+
+      数据由 DNS 证据推断；采集覆盖可能不完整。

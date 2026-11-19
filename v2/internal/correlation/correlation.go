@@ -80,9 +80,18 @@ func Match(f Flow, events []DNSEvent, rules []Rule, window time.Duration) Result
 // observed segment. A later answer may expose ambiguity, but cannot justify
 // bytes that preceded the answer.
 func MatchInterval(f Flow, end time.Time, events []DNSEvent, rules []Rule, window time.Duration) Result {
-	if end.Before(f.Start) {
+	return MatchUncertainInterval(f, end, events, rules, window, 0)
+}
+
+// MatchUncertainInterval requires the evidence to hold for every possible
+// segment interval inside the exporter timestamp uncertainty.
+func MatchUncertainInterval(f Flow, end time.Time, events []DNSEvent, rules []Rule, window, uncertainty time.Duration) Result {
+	if end.Before(f.Start) || uncertainty < 0 {
 		return Result{Reason: "invalid_flow_interval"}
 	}
+	earliestStart := f.Start.Add(-uncertainty)
+	latestStart := f.Start.Add(uncertainty)
+	end = end.Add(uncertainty)
 	if window != 30*time.Second && window != 60*time.Second && window != 120*time.Second {
 		return Result{Reason: "invalid_window"}
 	}
@@ -103,69 +112,35 @@ func MatchInterval(f Flow, end time.Time, events []DNSEvent, rules []Rule, windo
 	covered := false
 	for _, ev := range events {
 		ip, e := netip.ParseAddr(ev.ClientIP)
-		if e != nil || ip.Unmap() != client || !ev.ResponseOK || len(ev.Questions) != 1 || ev.At.After(end) || f.Start.Sub(ev.At) > window {
+		if e != nil || ip.Unmap() != client || !ev.ResponseOK || ev.At.After(end) {
 			continue
 		}
-		q := domain(ev.Questions[0].Name)
-		if q == "" {
-			continue
-		}
-		type node struct {
-			name    string
-			expires time.Time
-		}
-		queue := []node{{q, ev.At.Add(window)}}
-		visited := map[string]bool{}
-		matched := false
-		covers := false
-		for len(queue) > 0 && len(visited) < 32 {
-			n := queue[0]
-			queue = queue[1:]
-			if visited[n.name] {
+		matchedEvent := false
+		for _, question := range ev.Questions {
+			q := domain(question.Name)
+			if q == "" {
 				continue
 			}
-			visited[n.name] = true
-			for _, a := range ev.Answers {
-				if domain(a.Name) != n.name || a.TTL == 0 {
-					continue
-				}
-				expires := ev.At.Add(time.Duration(a.TTL) * time.Second)
-				if expires.After(n.expires) {
-					expires = n.expires
-				}
-				if !f.Start.Before(expires) {
-					continue
-				}
-				switch strings.ToUpper(a.Type) {
-				case "CNAME":
-					target := domain(a.Data)
-					if target != "" && !visited[target] {
-						queue = append(queue, node{target, expires})
-					}
-				case "A", "AAAA":
-					ip, e := netip.ParseAddr(a.Data)
-					if e == nil && ip.Unmap() == remote {
-						matched = true
-						covers = covers || (!ev.At.After(f.Start) && end.Before(expires))
-					}
-				}
+			expires, ambiguous := answerExpiry(ev, q, question.Type, remote)
+			if !earliestStart.Before(expires) {
+				continue
+			}
+			matchedEvent = true
+			names[q] = true
+			covered = covered || (!ambiguous && len(ev.Questions) == 1 && ev.At.Before(earliestStart) &&
+				end.Before(expires) && latestStart.Before(ev.At.Add(window)))
+			app, ok := lookup(rules, q)
+			if ambiguous || len(ev.Questions) != 1 || !ok || (selected != "" && selected != app) {
+				unknown = true
+			} else {
+				selected = app
 			}
 		}
-		if !matched {
-			continue
-		}
-		covered = covered || covers
-		names[q] = true
-		ids = append(ids, ev.ID)
-		app, ok := lookup(rules, q)
-		if !ok {
-			unknown = true
-		} else if selected != "" && selected != app {
-			unknown = true
-		} else {
-			selected = app
+		if matchedEvent {
+			ids = append(ids, ev.ID)
 		}
 	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	domains := make([]string, 0, len(names))
 	for n := range names {
 		domains = append(domains, n)
@@ -181,4 +156,83 @@ func MatchInterval(f Flow, end time.Time, events []DNSEvent, rules []Rule, windo
 		return Result{Reason: "dns_segment_not_covered", Domains: domains, EventIDs: ids}
 	}
 	return Result{AppID: selected, Reason: "dns_client_ip_ttl", Domains: domains, EventIDs: ids}
+}
+
+// answerExpiry follows a single CNAME chain. A malformed chain can veto a
+// match when its response mentions the remote address, but cannot support one.
+func answerExpiry(ev DNSEvent, name, qtype string, remote netip.Addr) (time.Time, bool) {
+	qtype = strings.ToUpper(qtype)
+	var expiry time.Time
+	visited := make(map[string]bool)
+	for name != "" && len(visited) < 32 && !visited[name] {
+		visited[name] = true
+		target := ""
+		targetExpiry := expiry
+		var addressExpiry time.Time
+		hasAddress := false
+		for _, answer := range ev.Answers {
+			if domain(answer.Name) != name {
+				continue
+			}
+			rrtype := strings.ToUpper(answer.Type)
+			until := ev.At.Add(time.Duration(answer.TTL) * time.Second)
+			if !expiry.IsZero() && expiry.Before(until) {
+				until = expiry
+			}
+			switch rrtype {
+			case "CNAME":
+				next := domain(answer.Data)
+				if next == "" || (target != "" && target != next) {
+					return malformedExpiry(ev, remote), true
+				}
+				target = next
+				if targetExpiry.IsZero() || until.Before(targetExpiry) {
+					targetExpiry = until
+				}
+			case "A", "AAAA":
+				hasAddress = true
+				if matchesAddress(answer, remote) && (qtype == "" || qtype == "ANY" || qtype == rrtype) {
+					if addressExpiry.IsZero() || until.Before(addressExpiry) {
+						addressExpiry = until
+					}
+				}
+			}
+		}
+		if target == "" {
+			return addressExpiry, false
+		}
+		if hasAddress {
+			return malformedExpiry(ev, remote), true
+		}
+		name, expiry = target, targetExpiry
+	}
+	return malformedExpiry(ev, remote), true
+}
+
+func matchesAddress(answer Answer, remote netip.Addr) bool {
+	ip, err := netip.ParseAddr(answer.Data)
+	if err != nil || ip.Unmap() != remote {
+		return false
+	}
+	switch strings.ToUpper(answer.Type) {
+	case "A":
+		return ip.Is4()
+	case "AAAA":
+		return ip.Is6() && !ip.Is4In6()
+	default:
+		return false
+	}
+}
+
+func malformedExpiry(ev DNSEvent, remote netip.Addr) time.Time {
+	var latest time.Time
+	for _, answer := range ev.Answers {
+		if matchesAddress(answer, remote) {
+			until := ev.At.Add(time.Duration(answer.TTL) * time.Second)
+			if until.After(latest) {
+				latest = until
+			}
+		}
+	}
+	return latest
 }

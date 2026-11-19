@@ -1,0 +1,60 @@
+name: Build and publish NetFlow Plus V2
+on:
+  push:
+    branches: [netflow-v2-release]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: netflow-v2-release
+  cancel-in-progress: false
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build frontend
+        working-directory: v2/web
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v2/go.mod
+          cache-dependency-path: v2/go.sum
+      - name: Verify backend
+        working-directory: v2
+        run: |
+          go test ./...
+          go vet ./...
+      - name: Build isolated Docker image
+        run: docker build -t netflow-plus-v2:check ./v2
+      - name: Smoke check Docker image
+        run: |
+          set -eu
+          docker run -d --name netflow-v2-check --read-only --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m -e APP_PASSWORD=ci-test -p 127.0.0.1:18088:8088 netflow-plus-v2:check
+          for n in $(seq 1 30); do curl -fsS http://127.0.0.1:18088/healthz && break || sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/api/summary)" = 401
+          curl -fsS -u v2:ci-test http://127.0.0.1:18088/api/summary >/dev/null
+          docker exec netflow-v2-check sh -ec 'test "$(id -u)" -ne 0 && test -w /data && test -s /data/app.db'
+      - name: Print smoke logs on failure
+        if: failure()
+        run: docker logs netflow-v2-check || true
+      - name: Sign in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish V2 tags
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          set -eu
+          docker tag netflow-plus-v2:check admbb99/netflow-plus-zh:v2
+          docker tag netflow-plus-v2:check "admbb99/netflow-plus-zh:v2-${REVISION:0:12}"
+          docker push "admbb99/netflow-plus-zh:v2-${REVISION:0:12}"
+          docker push admbb99/netflow-plus-zh:v2

@@ -1,0 +1,76 @@
+# Home Assistant configuration.yaml example. Replace host/port and store
+# credentials with Home Assistant secrets. The API uses HTTP Basic auth.
+rest:
+  - resource: "https://YOUR_V2_HOST/api/ha/summary?range=24h"
+    authentication: basic
+    username: "v2"
+    password: !secret netflow_v2_password
+    scan_interval: 120
+    sensor:
+      - name: "NetFlow V2 DNS 同步时间"
+        unique_id: netflow_v2_dns_synced_until
+        value_template: "{{ value_json.dns_synced_until_ms | int(0) }}"
+        unit_of_measurement: "ms"
+        json_attributes:
+          - dns_coverage_start_ms
+          - app_traffic_available
+          - app_traffic_attribution_enabled
+          - app_traffic_coverage_complete
+          - app_traffic_reason
+          - traffic
+          - v2_flow
+  - resource: "https://YOUR_V2_HOST/api/ha/top_apps?range=24h&metric=dns"
+    authentication: basic
+    username: "v2"
+    password: !secret netflow_v2_password
+    scan_interval: 120
+    sensor:
+      - name: "NetFlow V2 DNS 应用热度"
+        unique_id: netflow_v2_dns_app_popularity
+        value_template: "{{ value_json['items'] | length }}"
+        json_attributes:
+          - items
+          - unknown_queries
+          - truncated_domains
+  - resource: "https://YOUR_V2_HOST/api/ha/top_devices?range=24h"
+    authentication: basic
+    username: "v2"
+    password: !secret netflow_v2_password
+    scan_interval: 120
+    sensor:
+      - name: "NetFlow V2 活跃设备排行"
+        unique_id: netflow_v2_top_devices
+        value_template: "{{ value_json['items'] | length }}"
+        json_attributes:
+          - items
+          - source
+  - resource: "https://YOUR_V2_HOST/api/ha/top_apps?range=24h&metric=bytes"
+    authentication: basic
+    username: "v2"
+    password: !secret netflow_v2_password
+    scan_interval: 120
+    sensor:
+      - name: "NetFlow V2 应用流量推断"
+        unique_id: netflow_v2_app_traffic
+        value_template: "{{ value_json.observed.bytes | int(0) }}"
+        unit_of_measurement: "B"
+        json_attributes:
+          - items
+          - observed
+          - inferred
+          - unknown
+          - unknown_reasons
+          - coverage_complete
+          - dns_evidence_scope
+  - resource: "https://YOUR_V2_HOST/api/ha/categories?range=24h"
+    authentication: basic
+    username: "v2"
+    password: !secret netflow_v2_password
+    scan_interval: 120
+    sensor:
+      - name: "NetFlow V2 应用分类"
+        unique_id: netflow_v2_categories
+        value_template: "{{ (value_json['items'] | default([])) | length }}"
+        json_attributes:
+          - items
+          - coverage_complete

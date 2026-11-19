@@ -41,9 +41,10 @@
       "domain": "douyin.com",
       "match": "suffix",
       "appId": "douyin",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://www.douyin.com/help"
     },
     {
       "domain": "spotify.com",
@@ -58,49 +59,55 @@
       "domain": "telegram.org",
       "match": "suffix",
       "appId": "telegram",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://core.telegram.org/"
     },
     {
       "domain": "discord.com",
       "match": "suffix",
       "appId": "discord",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://discord.com/"
     },
     {
       "domain": "steampowered.com",
       "match": "suffix",
       "appId": "steam",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://store.steampowered.com/"
     },
     {
       "domain": "chatgpt.com",
       "match": "suffix",
       "appId": "chatgpt",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://chatgpt.com/"
     },
     {
       "domain": "api.openai.com",
       "match": "exact",
       "appId": "openai_api",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://developers.openai.com/api/reference/overview/"
     },
     {
       "domain": "deepseek.com",
       "match": "suffix",
       "appId": "deepseek",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://www.deepseek.com/"
     },
     {
       "domain": "github.com",
@@ -115,25 +122,28 @@
       "domain": "gitlab.com",
       "match": "suffix",
       "appId": "gitlab",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://docs.gitlab.com/"
     },
     {
       "domain": "hub.docker.com",
       "match": "exact",
       "appId": "dockerhub",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://hub.docker.com/"
     },
     {
       "domain": "pypi.org",
       "match": "suffix",
       "appId": "pypi",
-      "source": "curated",
+      "source": "verified-curated",
       "confidence": "high",
-      "enabled": true
+      "enabled": true,
+      "sourceVersion": "https://pypi.org/"
     },
     {
       "domain": "npmjs.com",
@@ -421,6 +431,105 @@
       "confidence": "medium",
       "enabled": true,
       "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "microsoft.com",
+      "match": "suffix",
+      "appId": "microsoft",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://www.microsoft.com/"
+    },
+    {
+      "domain": "onedrive.com",
+      "match": "suffix",
+      "appId": "onedrive",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://learn.microsoft.com/sharepoint/required-urls-and-ports"
+    },
+    {
+      "domain": "onedrive.live.com",
+      "match": "exact",
+      "appId": "onedrive",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://learn.microsoft.com/sharepoint/required-urls-and-ports"
+    },
+    {
+      "domain": "openai.com",
+      "match": "exact",
+      "appId": "openai",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://help.openai.com/en/articles/11725090-verifying-communications-from-openai"
+    },
+    {
+      "domain": "platform.openai.com",
+      "match": "exact",
+      "appId": "openai_api",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://openai.com/"
+    },
+    {
+      "domain": "cloud.tencent.com",
+      "match": "suffix",
+      "appId": "tencentcloud",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://cloud.tencent.com/"
+    },
+    {
+      "domain": "tencentcloud.com",
+      "match": "suffix",
+      "appId": "tencentcloud",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://www.tencentcloud.com/"
+    },
+    {
+      "domain": "jd.com",
+      "match": "suffix",
+      "appId": "jingdong",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://corporate.jd.com/home"
+    },
+    {
+      "domain": "pinduoduo.com",
+      "match": "suffix",
+      "appId": "pinduoduo",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://www.yangkeduo.com/home/customer"
+    },
+    {
+      "domain": "yangkeduo.com",
+      "match": "suffix",
+      "appId": "pinduoduo",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://www.yangkeduo.com/home/customer"
+    },
+    {
+      "domain": "xunlei.com",
+      "match": "suffix",
+      "appId": "xunlei",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "https://www.xunlei.com/cloud"
     }
   ]
 }

@@ -15,15 +15,14 @@ import (
 )
 
 type Server struct {
-	Store            *storage.Store
-	Source           string
-	Netflow          *netflow.Client
-	Password         string
-	Apps             []catalog.App
-	Rules            []correlation.Rule
-	FlowEnabled      bool
-	DNSVerifiedFrom  time.Time
-	DNSVerifiedUntil time.Time
+	Store                *storage.Store
+	Source               string
+	Netflow              *netflow.Client
+	Password             string
+	Apps                 []catalog.App
+	Rules                []correlation.Rule
+	FlowEnabled          bool
+	DNSCorrelationWindow time.Duration
 }
 
 // Protect challenges on initial navigation as well as API requests so a
@@ -68,13 +67,13 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { jsonResponse(w, 200, map[string]string{"status": "ok"}) })
-	m.HandleFunc("GET /api/summary", s.auth(s.summary))
-	m.HandleFunc("GET /api/ha/summary", s.auth(s.summary))
+	m.HandleFunc("GET /api/summary", s.analytics(s.summary))
+	m.HandleFunc("GET /api/ha/summary", s.analytics(s.summary))
 	m.HandleFunc("GET /api/apps", s.auth(s.apps))
 	m.HandleFunc("POST /api/apps", s.auth(s.createApp))
-	m.HandleFunc("GET /api/apps/top", s.auth(s.top))
-	m.HandleFunc("GET /api/ha/top_apps", s.auth(s.top))
-	m.HandleFunc("GET /api/unknown", s.auth(s.unknown))
+	m.HandleFunc("GET /api/apps/top", s.analytics(s.top))
+	m.HandleFunc("GET /api/ha/top_apps", s.analytics(s.top))
+	m.HandleFunc("GET /api/unknown", s.analytics(s.unknown))
 	m.HandleFunc("GET /api/rules", s.auth(s.listRules))
 	m.HandleFunc("POST /api/rules", s.auth(s.writeRule))
 	m.HandleFunc("PUT /api/rules/{id}", s.auth(s.writeRule))
@@ -82,6 +81,15 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /api/devices", s.auth(s.devices))
 	m.HandleFunc("GET /api/devices/top", s.auth(s.devices))
 	m.HandleFunc("GET /api/ha/top_devices", s.auth(s.devices))
+	m.HandleFunc("GET /api/apps/{id}", s.analytics(s.appTrafficDetail))
+	m.HandleFunc("GET /api/apps/{id}/traffic", s.analytics(s.appTrafficDetail))
+	m.HandleFunc("GET /api/apps/trend", s.analytics(s.trafficTrend))
+	m.HandleFunc("GET /api/traffic/trend", s.analytics(s.trafficTrend))
+	m.HandleFunc("GET /api/categories", s.analytics(s.trafficCategories))
+	m.HandleFunc("GET /api/ha/categories", s.analytics(s.trafficCategories))
+	m.HandleFunc("GET /api/ha/top_categories", s.analytics(s.trafficCategories))
+	m.HandleFunc("GET /api/traffic/devices", s.analytics(s.trafficDevices))
+	s.registerRuleTools(m)
 	return m
 }
 
@@ -107,7 +115,13 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"range": value, "items": devices, "source": "netflow_plus", "note": "existing external traffic aggregates"})
 }
 func rangeMillis(r *http.Request) (string, int64, int64) {
-	value := r.URL.Query().Get("range")
+	q := r.URL.Query()
+	if q.Get("range") == "custom" || q.Has("from_ms") || q.Has("to_ms") {
+		from, _ := strconv.ParseInt(q.Get("from_ms"), 10, 64)
+		to, _ := strconv.ParseInt(q.Get("to_ms"), 10, 64)
+		return "custom", from, to
+	}
+	value := q.Get("range")
 	var d time.Duration
 	switch value {
 	case "1h":
@@ -131,22 +145,27 @@ func (s *Server) summary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := map[string]any{"range": value, "dns_coverage_start_ms": start, "dns_synced_until_ms": end, "requested_from_ms": from, "requested_to_ms": to, "app_traffic_available": false, "app_traffic_reason": "per-application byte attribution is not yet complete or verified"}
-	for key, value := range s.trafficSummary(r) {
+	status, err := s.Store.DNSStability(r.Context(), s.Source)
+	if err != nil {
+		jsonResponse(w, 500, map[string]string{"error": "storage unavailable"})
+		return
+	}
+	for key, value := range s.trafficSummary(status) {
 		result[key] = value
 	}
 	if s.FlowEnabled {
-		observed, err := s.Store.FlowTotals(r.Context(), from, to)
+		observed, err := s.Store.ReceivedFlowTotals(r.Context(), from, to)
 		if err != nil {
 			result["v2_flow_error"] = "V2 flow totals unavailable"
 		} else {
 			result["v2_flow"] = observed
-			result["v2_flow_note"] = "IPFIX bytes grouped by receive hour; coverage may be incomplete"
+			result["v2_flow_note"] = "Observed WAN IPFIX bytes by receive time; coverage may be incomplete"
 		}
 		if health, err := s.Store.FlowHealth(r.Context()); err == nil {
 			result["v2_flow_health"] = health
 		}
 	}
-	if s.Netflow != nil {
+	if s.Netflow != nil && value != "custom" {
 		ov, err := s.Netflow.Overview(r.Context(), value)
 		if err == nil {
 			result["traffic"] = ov
@@ -182,7 +201,7 @@ func (s *Server) top(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, 500, map[string]string{"error": "应用读取失败"})
 			return
 		}
-		s.trafficTop(w, r, apps, rules)
+		s.trafficView(w, r, apps, rules, "ranking", "")
 		return
 	}
 	if metric != "" && metric != "dns" {

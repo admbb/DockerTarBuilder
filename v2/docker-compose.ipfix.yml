@@ -1,0 +1,12 @@
+# Optional second IPFIX target. Use together with docker-compose.yml only after
+# V2 has been validated; replace exporter and network values in .env.
+services:
+  netflow-v2:
+    ports:
+      - "${FLOW_BIND_ADDRESS:-127.0.0.1}:${FLOW_PORT:-2056}:2056/udp"
+    environment:
+      FLOW_LISTEN: "0.0.0.0:2056"
+      FLOW_EXPORTERS: "${FLOW_EXPORTERS:?请设置 RouterOS 导出源地址}"
+      LOCAL_NETWORKS: "${LOCAL_NETWORKS:?请设置局域网 CIDR}"
+      FLOW_IGNORE_EXPORT_TARGETS: "${FLOW_IGNORE_EXPORT_TARGETS:-}"
+      FLOW_RETENTION_DAYS: "${FLOW_RETENTION_DAYS:-30}"

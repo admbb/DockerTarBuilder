@@ -1,0 +1,43 @@
+services:
+  netflow-v2:
+    image: admbb99/netflow-plus-zh:v2
+    container_name: netflow-plus-v2
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    ports:
+      - "${V2_BIND_ADDRESS:-127.0.0.1}:${V2_WEB_PORT:-18088}:8088/tcp"
+      - "${V2_FLOW_BIND_ADDRESS:-127.0.0.1}:${V2_FLOW_PORT:-2056}:2056/udp"
+    environment:
+      APP_PORT: "8088"
+      APP_PASSWORD: "${APP_PASSWORD:?请设置 V2 管理密码}"
+      DB_PATH: /data/app.db
+      OXIDNS_BASE_URL: "${OXIDNS_BASE_URL:?请设置 OxiDNS 地址}"
+      OXIDNS_SOURCE_ID: "${OXIDNS_SOURCE_ID:-oxidns-query-recorder}"
+      OXIDNS_RECORDER_TAG: "${OXIDNS_RECORDER_TAG:-query_recorder_main}"
+      OXIDNS_USERNAME: "${OXIDNS_USERNAME:-}"
+      OXIDNS_PASSWORD: "${OXIDNS_PASSWORD:-}"
+      NETFLOW_PLUS_BASE_URL: "${NETFLOW_PLUS_BASE_URL:-}"
+      NETFLOW_PLUS_USERNAME: "${NETFLOW_PLUS_USERNAME:-v2}"
+      NETFLOW_PLUS_PASSWORD: "${NETFLOW_PLUS_PASSWORD:-}"
+      FLOW_LISTEN: "0.0.0.0:2056"
+      FLOW_EXPORTERS: "${FLOW_EXPORTERS:?请设置 RouterOS 导出源地址}"
+      LOCAL_NETWORKS: "${LOCAL_NETWORKS:?请设置局域网网段}"
+      FLOW_IGNORE_EXPORT_TARGETS: "${FLOW_IGNORE_EXPORT_TARGETS:-}"
+      FLOW_RETENTION_DAYS: "${FLOW_RETENTION_DAYS:-30}"
+      DNS_RETENTION_DAYS: "${DNS_RETENTION_DAYS:-30}"
+      DNS_CORRELATION_WINDOW_SECONDS: "${DNS_CORRELATION_WINDOW_SECONDS:-60}"
+      POLL_INTERVAL_SECONDS: "${POLL_INTERVAL_SECONDS:-60}"
+    volumes:
+      - netflow-v2-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  netflow-v2-data:

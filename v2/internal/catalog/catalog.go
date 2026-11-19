@@ -45,15 +45,6 @@ func Load() ([]App, []correlation.Rule, error) {
 	if err = json.Unmarshal(r, &data); err != nil {
 		return nil, nil, err
 	}
-	icons := map[string]string{"youtube": "youtube", "netflix": "netflix", "bilibili": "bilibili", "spotify": "spotify", "github": "github", "telegram": "telegram", "discord": "discord", "steam": "steam", "deepseek": "deepseek", "gitlab": "gitlab", "dockerhub": "docker", "pypi": "pypi", "npm": "npm"}
-	for _, name := range []string{"wechat", "qq", "apple", "icloud", "google", "gmail", "whatsapp", "instagram", "facebook", "baidu", "alibabacloud", "taobao", "xiaohongshu", "neteasecloudmusic"} {
-		icons[name] = name
-	}
-	for i := range apps.Applications {
-		if name := icons[apps.Applications[i].ID]; name != "" {
-			apps.Applications[i].Icon = "/icons/" + name + ".svg"
-		}
-	}
 	var rules []correlation.Rule
 	for _, v := range data.Rules {
 		if v.Enabled && v.Source == "verified-curated" {

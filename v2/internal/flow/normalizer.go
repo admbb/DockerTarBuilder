@@ -11,6 +11,16 @@ import (
 
 const uptimeWrap = time.Duration(1<<32) * time.Millisecond
 
+// ExporterEstimatedTime requires both timestamps and a plausible exporter
+// interval. Legacy estimates and receive-time fallbacks cannot authorize DNS.
+const ExporterEstimatedTime = "exporter_estimated"
+
+// ExporterTimeUncertainty accounts for the header's second precision and
+// the allowed deviation from a settled receive/export clock baseline.
+const ExporterTimeUncertainty = 2 * time.Second
+
+const maxClockDeviation = time.Second
+
 // Normalizer converts decoded IPFIX messages into flows.
 type Normalizer struct {
 	topo          *Topology
@@ -22,14 +32,15 @@ type Normalizer struct {
 }
 
 // exporterClock tracks the offset between an exporter's clock and ours.
-// The export time in the IPFIX header is truncated to the second, so
-// receive-export lies in [offset, offset+1s); the minimum over a window is
-// the offset.
+// The minimum receive/export gap over recent windows approximates the
+// offset. Clock jumps, unusually late datagrams and warm-up are rejected.
 type exporterClock struct {
 	curMin, prevMin time.Duration
 	windowStart     time.Time
 	sysInitMs       uint64
 	reboots         int
+	firstExport     uint32
+	lastExport      uint32
 }
 
 // ClockInfo describes an exporter's clock as seen by the collector.
@@ -76,13 +87,26 @@ func (n *Normalizer) Fork() *Normalizer {
 // time changed since the previous message.
 func (n *Normalizer) Normalize(exporter netip.Addr, recv time.Time, msg *ipfix.Message) (flows []Flow, rebooted bool) {
 	n.topo.LearnRouter(exporter)
-	offset := n.offset(exporter, recv, msg.ExportTime)
+	var boot uint64
+	mixedBoot := false
+	for _, record := range msg.Records {
+		sample := record.SysInitMs
+		if sample == 0 || sample >= (uint64(msg.ExportTime)+1)*1000 {
+			continue
+		}
+		if boot != 0 && max(boot, sample)-min(boot, sample) > uint64(maxClockDeviation.Milliseconds()) {
+			mixedBoot = true
+		}
+		boot = sample
+	}
+	var offset time.Duration
+	var clockReliable bool
+	if !mixedBoot {
+		offset, clockReliable, rebooted = n.offset(exporter, recv, msg.ExportTime, boot)
+	}
 	flows = make([]Flow, 0, len(msg.Records))
 	for i := range msg.Records {
 		r := &msg.Records[i]
-		if r.SysInitMs != 0 && n.noteBoot(exporter, r.SysInitMs) {
-			rebooted = true
-		}
 		if r.Proto == 17 && r.Src == exporter && r.DstPort == n.flowPort {
 			continue // the export stream itself
 		}
@@ -90,13 +114,17 @@ func (n *Normalizer) Normalize(exporter netip.Addr, recv time.Time, msg *ipfix.M
 		if !ok {
 			continue
 		}
-		if r.SysInitMs == 0 {
-			// Do not infer a boot time from the Unix epoch when the template
-			// omitted systemInitTimeMilliseconds.
+		if mixedBoot || r.SysInitMs == 0 || r.SysInitMs >= (uint64(msg.ExportTime)+1)*1000 || !r.HasStartUptime || !r.HasEndUptime || msg.ExportTime == 0 {
 			f.Start, f.End, f.TimeQuality = recv, recv, "receive_only"
 		} else {
-			f.Start, f.End = n.interval(r, recv, offset)
-			f.TimeQuality = "estimated"
+			var reliable bool
+			f.Start, f.End, reliable = n.interval(r, recv, offset)
+			f.TimeQuality = "receive_only"
+			if reliable && clockReliable {
+				f.TimeQuality = ExporterEstimatedTime
+			} else if reliable {
+				f.TimeQuality = "unreliable_exporter_time"
+			}
 		}
 		f.Proto, f.Bytes, f.Packets, f.InIf, f.OutIf = r.Proto, r.Bytes, r.Packets, r.InIf, r.OutIf
 		flows = append(flows, f)
@@ -165,7 +193,7 @@ func (n *Normalizer) classify(r *ipfix.Record) (Flow, bool) {
 // RouterOS stamps flowEnd about one inactive timeout before it exports, but a
 // record that hit the active timeout still counts every packet up to the
 // export moment, so its bytes are spread up to the receive time.
-func (n *Normalizer) interval(r *ipfix.Record, recv time.Time, offset time.Duration) (time.Time, time.Time) {
+func (n *Normalizer) interval(r *ipfix.Record, recv time.Time, offset time.Duration) (time.Time, time.Time, bool) {
 	boot := time.UnixMilli(int64(r.SysInitMs)).Add(offset)
 	wall := func(uptimeMs uint32) time.Time {
 		t := boot.Add(time.Duration(uptimeMs) * time.Millisecond)
@@ -176,61 +204,54 @@ func (n *Normalizer) interval(r *ipfix.Record, recv time.Time, offset time.Durat
 	}
 	start, end := wall(r.StartUptimeMs), wall(r.EndUptimeMs)
 	dur := time.Duration(r.EndUptimeMs-r.StartUptimeMs) * time.Millisecond
+	if start.After(end) || end.After(recv) || recv.Sub(start) > 2*time.Hour || end.Sub(start) != dur {
+		return recv, recv, false
+	}
 	if dur >= n.activeTimeout-1500*time.Millisecond {
 		end = recv
 	}
-	if end.After(recv) {
-		end = recv
-	}
-	if start.After(end) {
-		start = end
-	}
-	if recv.Sub(start) > 2*time.Hour { // nonsense timestamps: fall back to the receive time
-		start = recv.Add(-dur)
-		end = recv
-	}
-	return start, end
+	return start, end, true
 }
 
-func (n *Normalizer) offset(exporter netip.Addr, recv time.Time, exportTime uint32) time.Duration {
+func differentBoot(a, b uint64) bool {
+	return max(a, b)-min(a, b) > 10_000
+}
+
+func (n *Normalizer) offset(exporter netip.Addr, recv time.Time, exportTime uint32, boot uint64) (time.Duration, bool, bool) {
+	if exportTime == 0 || boot == 0 {
+		return 0, false, false
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	d := recv.Sub(time.Unix(int64(exportTime), 0))
 	c := n.clocks[exporter]
-	if c == nil {
-		c = &exporterClock{curMin: d, prevMin: d, windowStart: recv}
-		n.clocks[exporter] = c
+	reboots := 0
+	rebooted := false
+	if c != nil {
+		reboots = c.reboots
+		rebooted = differentBoot(boot, c.sysInitMs)
+		if rebooted {
+			reboots++
+		}
 	}
+	if c == nil || rebooted || max(boot, c.sysInitMs)-min(boot, c.sysInitMs) > uint64(maxClockDeviation.Milliseconds()) ||
+		d < min(c.curMin, c.prevMin)-maxClockDeviation || recv.Sub(c.windowStart) > 4*time.Minute {
+		c = &exporterClock{curMin: d, prevMin: d, windowStart: recv, sysInitMs: boot, reboots: reboots, firstExport: exportTime, lastExport: exportTime}
+		n.clocks[exporter] = c
+		return d, false, rebooted
+	}
+	if exportTime < c.lastExport {
+		return min(c.curMin, c.prevMin), false, false
+	}
+	c.lastExport = exportTime
 	if recv.Sub(c.windowStart) > 2*time.Minute {
 		c.prevMin, c.curMin, c.windowStart = c.curMin, d, recv
 	}
 	if d < c.curMin {
 		c.curMin = d
 	}
-	return min(c.curMin, c.prevMin)
-}
-
-func (n *Normalizer) noteBoot(exporter netip.Addr, sysInitMs uint64) bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	c := n.clocks[exporter]
-	if c == nil {
-		return false
-	}
-	prev := c.sysInitMs
-	c.sysInitMs = sysInitMs
-	if prev == 0 {
-		return false
-	}
-	diff := int64(sysInitMs) - int64(prev)
-	if diff < 0 {
-		diff = -diff
-	}
-	if diff > 10_000 { // clock adjustments move the boot time slightly; a reboot moves it a lot
-		c.reboots++
-		return true
-	}
-	return false
+	offset := min(c.curMin, c.prevMin)
+	return offset, exportTime > c.firstExport && d-offset <= maxClockDeviation, false
 }
 
 // Clocks reports the clock state of every exporter seen.

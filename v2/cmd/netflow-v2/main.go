@@ -187,7 +187,11 @@ func main() {
 			}
 		}()
 	}
-	service := (&httpapi.Server{Store: db, Source: src, Netflow: netflowClient, Password: password, Apps: apps, Rules: rules, FlowEnabled: os.Getenv("FLOW_LISTEN") != ""}).Handler()
+	correlationSeconds, err := strconv.Atoi(env("DNS_CORRELATION_WINDOW_SECONDS", "60"))
+	if err != nil || (correlationSeconds != 30 && correlationSeconds != 60 && correlationSeconds != 120) {
+		log.Fatal("DNS_CORRELATION_WINDOW_SECONDS must be 30, 60, or 120")
+	}
+	service := (&httpapi.Server{Store: db, Source: src, Netflow: netflowClient, Password: password, Apps: apps, Rules: rules, FlowEnabled: os.Getenv("FLOW_LISTEN") != "", DNSCorrelationWindow: time.Duration(correlationSeconds) * time.Second}).Handler()
 	assets, err := fs.Sub(web.Files, "dist")
 	if err != nil {
 		log.Fatal(err)

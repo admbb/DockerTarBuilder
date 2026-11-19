@@ -28,6 +28,45 @@ func TestEventIDConflictRollsBackPage(t *testing.T) {
 	}
 }
 
+func TestFailedDNSPageLowersWatermarkFromEarliestAndKeepsRevisionOnRecovery(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "v2.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	conflict := oxidns.Record{ID: 1, CreatedAtMS: 1800, ClientIP: "192.168.1.1"}
+	if err := s.SavePage(ctx, "s", []oxidns.Record{conflict}); err != nil {
+		t.Fatal(err)
+	}
+	complete := func(from, to int64) {
+		t.Helper()
+		if err := s.CompleteDNSScan(ctx, "s", from, 0, to, to, 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete(0, 3000)
+	complete(3000, 4000)
+	conflict.ClientIP = "192.168.1.2"
+	late := oxidns.Record{ID: 2, CreatedAtMS: 1500, ClientIP: "192.168.1.1"}
+	if err := s.SaveDNSScanPage(ctx, "s", []oxidns.Record{late, conflict}, 4000); err == nil {
+		t.Fatal("expected conflict")
+	}
+	rolled, err := s.DNSStability(ctx, "s")
+	if err != nil || rolled.UntilMS != 1500 || rolled.EvidenceRevision != 1 {
+		t.Fatalf("rolled back: %+v, %v", rolled, err)
+	}
+	if err := s.SaveDNSScanPage(ctx, "s", []oxidns.Record{late}, 4000); err != nil {
+		t.Fatal(err)
+	}
+	complete(4000, 5000)
+	complete(5000, 6000)
+	recovered, err := s.DNSStability(ctx, "s")
+	if err != nil || recovered.UntilMS != 5000 || recovered.EvidenceRevision != rolled.EvidenceRevision {
+		t.Fatalf("recovered: %+v, %v", recovered, err)
+	}
+}
+
 func TestEvidenceQueryRefusesTruncatedResults(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "v2.db"))
 	if err != nil {

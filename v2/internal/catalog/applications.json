@@ -4,152 +4,224 @@
     {
       "id": "youtube",
       "name": "YouTube",
-      "category": "video"
+      "category": "video",
+      "icon": "/icons/youtube.svg"
     },
     {
       "id": "netflix",
       "name": "Netflix",
-      "category": "video"
+      "category": "video",
+      "icon": "/icons/netflix.svg"
     },
     {
       "id": "bilibili",
       "name": "哔哩哔哩",
-      "category": "video"
+      "category": "video",
+      "icon": "/icons/bilibili.svg"
     },
     {
       "id": "douyin",
       "name": "抖音",
-      "category": "video"
+      "category": "video",
+      "icon": "/icons/douyin.svg"
     },
     {
       "id": "spotify",
       "name": "Spotify",
-      "category": "music"
+      "category": "music",
+      "icon": "/icons/spotify.svg"
     },
     {
       "id": "telegram",
       "name": "Telegram",
-      "category": "social"
+      "category": "social",
+      "icon": "/icons/telegram.svg"
     },
     {
       "id": "discord",
       "name": "Discord",
-      "category": "social"
+      "category": "social",
+      "icon": "/icons/discord.svg"
     },
     {
       "id": "steam",
       "name": "Steam",
-      "category": "gaming"
+      "category": "gaming",
+      "icon": "/icons/steam.svg"
     },
     {
       "id": "chatgpt",
       "name": "ChatGPT",
-      "category": "ai"
+      "category": "ai",
+      "icon": "/icons/chatgpt.svg"
     },
     {
       "id": "openai_api",
       "name": "OpenAI API",
-      "category": "ai"
+      "category": "ai",
+      "icon": "/icons/openai.svg"
     },
     {
       "id": "deepseek",
       "name": "DeepSeek",
-      "category": "ai"
+      "category": "ai",
+      "icon": "/icons/deepseek.svg"
     },
     {
       "id": "github",
       "name": "GitHub",
-      "category": "developer"
+      "category": "developer",
+      "icon": "/icons/github.svg"
     },
     {
       "id": "gitlab",
       "name": "GitLab",
-      "category": "developer"
+      "category": "developer",
+      "icon": "/icons/gitlab.svg"
     },
     {
       "id": "dockerhub",
       "name": "Docker Hub",
-      "category": "developer"
+      "category": "developer",
+      "icon": "/icons/docker.svg"
     },
     {
       "id": "pypi",
       "name": "PyPI",
-      "category": "developer"
+      "category": "developer",
+      "icon": "/icons/pypi.svg"
     },
     {
       "id": "npm",
       "name": "npm",
-      "category": "developer"
+      "category": "developer",
+      "icon": "/icons/npm.svg"
     },
     {
       "id": "wechat",
       "name": "微信",
-      "category": "social"
+      "category": "social",
+      "icon": "/icons/wechat.svg"
     },
     {
       "id": "qq",
       "name": "QQ",
-      "category": "social"
+      "category": "social",
+      "icon": "/icons/qq.svg"
     },
     {
       "id": "apple",
       "name": "Apple",
-      "category": "system"
+      "category": "system",
+      "icon": "/icons/apple.svg"
     },
     {
       "id": "icloud",
       "name": "iCloud",
-      "category": "cloud"
+      "category": "cloud",
+      "icon": "/icons/icloud.svg"
     },
     {
       "id": "google",
       "name": "Google",
-      "category": "cloud"
+      "category": "cloud",
+      "icon": "/icons/google.svg"
     },
     {
       "id": "gmail",
       "name": "Gmail",
-      "category": "office"
+      "category": "office",
+      "icon": "/icons/gmail.svg"
     },
     {
       "id": "whatsapp",
       "name": "WhatsApp",
-      "category": "social"
+      "category": "social",
+      "icon": "/icons/whatsapp.svg"
     },
     {
       "id": "instagram",
       "name": "Instagram",
-      "category": "social"
+      "category": "social",
+      "icon": "/icons/instagram.svg"
     },
     {
       "id": "facebook",
       "name": "Facebook",
-      "category": "social"
+      "category": "social",
+      "icon": "/icons/facebook.svg"
     },
     {
       "id": "baidu",
       "name": "百度",
-      "category": "system"
+      "category": "system",
+      "icon": "/icons/baidu.svg"
     },
     {
       "id": "alibabacloud",
       "name": "阿里云",
-      "category": "cloud"
+      "category": "cloud",
+      "icon": "/icons/alibabacloud.svg"
     },
     {
       "id": "taobao",
       "name": "淘宝",
-      "category": "shopping"
+      "category": "shopping",
+      "icon": "/icons/taobao.svg"
     },
     {
       "id": "xiaohongshu",
       "name": "小红书",
-      "category": "social"
+      "category": "social",
+      "icon": "/icons/xiaohongshu.svg"
     },
     {
       "id": "neteasecloudmusic",
       "name": "网易云音乐",
-      "category": "music"
+      "category": "music",
+      "icon": "/icons/neteasecloudmusic.svg"
+    },
+    {
+      "category": "system",
+      "icon": "/icons/microsoft.svg",
+      "name": "Microsoft",
+      "id": "microsoft"
+    },
+    {
+      "category": "cloud",
+      "icon": "/icons/onedrive.svg",
+      "name": "OneDrive",
+      "id": "onedrive"
+    },
+    {
+      "category": "ai",
+      "icon": "/icons/openai.svg",
+      "name": "OpenAI",
+      "id": "openai"
+    },
+    {
+      "category": "cloud",
+      "icon": "/icons/tencentcloud.svg",
+      "name": "腾讯云",
+      "id": "tencentcloud"
+    },
+    {
+      "category": "shopping",
+      "icon": "/icons/jingdong.svg",
+      "name": "京东",
+      "id": "jingdong"
+    },
+    {
+      "category": "shopping",
+      "icon": "/icons/pinduoduo.svg",
+      "name": "拼多多",
+      "id": "pinduoduo"
+    },
+    {
+      "category": "download",
+      "icon": "/icons/xunlei.svg",
+      "name": "迅雷",
+      "id": "xunlei"
     }
   ]
 }

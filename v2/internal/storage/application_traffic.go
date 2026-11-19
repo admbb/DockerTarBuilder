@@ -37,7 +37,7 @@ const TrafficPageSize = 512
 
 // TrafficSegments copies a bounded page so callers can query DNS evidence after
 // this function releases the database connection.
-func (s *Store) TrafficSegments(ctx context.Context, from, until int64, after *TrafficSegment) ([]TrafficSegment, error) {
+func (s *Store) TrafficSegments(ctx context.Context, from, until int64, clientIP string, after *TrafficSegment) ([]TrafficSegment, error) {
 	if from < 0 || until <= from {
 		return nil, errors.New("invalid flow interval")
 	}
@@ -45,13 +45,18 @@ func (s *Store) TrafficSegments(ctx context.Context, from, until int64, after *T
 	if after != nil {
 		received, exporter, digest, ordinal = after.ReceivedMS, after.Exporter, after.Digest, after.Ordinal
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	query := `
 		SELECT received_ms, exporter, digest, ordinal, start_ms, end_ms, client_ip, remote_ip, proto, direction, bytes, time_quality
 		FROM flow_segments
 		WHERE zone=0 AND received_ms>=? AND received_ms<?
-		  AND (received_ms,exporter,digest,ordinal)>(?,?,?,?)
-		ORDER BY received_ms,exporter,digest,ordinal LIMIT ?`,
-		from, until, received, exporter, digest, ordinal, TrafficPageSize)
+		  AND (received_ms,exporter,digest,ordinal)>(?,?,?,?)`
+	args := []any{from, until, received, exporter, digest, ordinal}
+	if clientIP != "" {
+		query += " AND client_ip=?"
+		args = append(args, clientIP)
+	}
+	query += " ORDER BY received_ms,exporter,digest,ordinal LIMIT ?"
+	rows, err := s.db.QueryContext(ctx, query, append(args, TrafficPageSize)...)
 	if err != nil {
 		return nil, err
 	}

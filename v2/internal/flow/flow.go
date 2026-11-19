@@ -69,7 +69,7 @@ type Flow struct {
 	PublicPort  uint16
 	InIf        uint32
 	OutIf       uint32
-	TimeQuality string // "estimated" or "receive_only"; never a packet-level timestamp
+	TimeQuality string // ExporterEstimatedTime or "receive_only"
 }
 
 // ConnKey identifies a bidirectional connection in the inside view.

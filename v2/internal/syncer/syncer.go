@@ -21,7 +21,7 @@ type Syncer struct {
 	PageDelay time.Duration
 }
 
-const defaultReplayWindow = 5 * time.Minute
+const ReplayLag = 5 * time.Minute
 
 // RunInterval always uses a fixed upper bound. Pages are saved idempotently;
 // only a fully traversed interval advances the durable checkpoint.
@@ -39,9 +39,16 @@ func (s *Syncer) RunInterval(ctx context.Context, until time.Time) error {
 	if upper <= from {
 		return fmt.Errorf("sync upper bound must advance")
 	}
-	// Re-read a bounded overlap to recover delayed recorder writes. This
-	// reduces gaps but cannot prove that the upstream has no later writes.
-	queryFrom := max(start, from-defaultReplayWindow.Milliseconds())
+	status, err := s.Store.DNSStability(ctx, s.Source)
+	if err != nil {
+		return err
+	}
+	queryFrom := max(start, from-ReplayLag.Milliseconds())
+	if status.ScannedUntilMS == from && from != 0 {
+		// Backfill can advance by more than the replay lag. Re-read the
+		// unsettled suffix and the trailing portion of previously stable data.
+		queryFrom = max(start, status.UntilMS-ReplayLag.Milliseconds())
+	}
 	cursor := ""
 	seen := map[string]bool{}
 	for pageIndex := 0; pageIndex < 10000; pageIndex++ {
@@ -49,16 +56,19 @@ func (s *Syncer) RunInterval(ctx context.Context, until time.Time) error {
 		if err != nil {
 			return err
 		}
+		if !page.OK {
+			return fmt.Errorf("OxiDNS pagination failed")
+		}
 		for _, r := range page.Records {
 			if r.CreatedAtMS < queryFrom || r.CreatedAtMS > upper {
 				return fmt.Errorf("record outside requested time interval")
 			}
 		}
-		if err = s.Store.SavePage(ctx, s.Source, page.Records); err != nil {
+		if err = s.Store.SaveDNSScanPage(ctx, s.Source, page.Records, from); err != nil {
 			return err
 		}
 		if page.NextCursor == "" {
-			return s.Store.CompleteInterval(ctx, s.Source, from, upper)
+			return s.Store.CompleteDNSScan(ctx, s.Source, from, queryFrom, upper, time.Now().UnixMilli(), ReplayLag.Milliseconds())
 		}
 		if seen[page.NextCursor] || page.NextCursor == cursor {
 			return fmt.Errorf("repeated OxiDNS pagination cursor")

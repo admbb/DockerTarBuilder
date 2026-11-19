@@ -38,12 +38,13 @@ func TestTrafficRankingBalancesObservedBytes(t *testing.T) {
 	if err := db.SavePage(ctx, "dns", []oxidns.Record{ev}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CompleteInterval(ctx, "dns", 0, now.Add(-time.Minute).UnixMilli()); err != nil {
+	firstScan := now.Add(-time.Minute).UnixMilli()
+	if err := db.CompleteDNSScan(ctx, "dns", 0, 0, firstScan, now.UnixMilli(), time.Minute.Milliseconds()); err != nil {
 		t.Fatal(err)
 	}
 
 	base := flow.Flow{Zone: flow.ZoneWAN, Start: start, End: start.Add(time.Second),
-		LocalIP: client, RemoteIP: remote, Proto: 6, Dir: flow.Up, Bytes: 120, TimeQuality: "estimated"}
+		LocalIP: client, RemoteIP: remote, Proto: 6, Dir: flow.Up, Bytes: 120, TimeQuality: flow.ExporterEstimatedTime}
 	afterTTL := base
 	afterTTL.Dir, afterTTL.Bytes, afterTTL.End = flow.Down, 80, start.Add(6*time.Second)
 	local := base
@@ -63,7 +64,7 @@ func TestTrafficRankingBalancesObservedBytes(t *testing.T) {
 	request := func() trafficRanking {
 		t.Helper()
 		response := httptest.NewRecorder()
-		s.trafficTop(response, httptest.NewRequest("GET", "/api/apps/top?metric=bytes&range=1h", nil), apps, rules)
+		s.trafficView(response, httptest.NewRequest("GET", "/api/apps/top?metric=bytes&range=1h", nil), apps, rules, "ranking", "")
 		var rank trafficRanking
 		if err := json.Unmarshal(response.Body.Bytes(), &rank); response.Code != http.StatusOK || err != nil {
 			t.Fatalf("HTTP %d, body %s, error %v", response.Code, response.Body, err)
@@ -73,14 +74,17 @@ func TestTrafficRankingBalancesObservedBytes(t *testing.T) {
 	unverified := request()
 	if unverified.AttributionEnabled || unverified.CoverageComplete || len(unverified.Items) != 0 ||
 		unverified.Observed.Bytes != 210 || unverified.Unknown.Bytes != 210 ||
-		unverified.UnknownReasons["dns_completeness_unverified"].Records != 3 {
+		unverified.UnknownReasons["dns_rescan_pending"].Records != 3 {
 		t.Fatalf("unverified: %+v", unverified)
 	}
-	s.DNSVerifiedFrom, s.DNSVerifiedUntil = start.Add(-2*time.Minute), now.Add(-time.Minute)
+	if err := db.CompleteDNSScan(ctx, "dns", firstScan, 0, now.UnixMilli(), now.UnixMilli(), time.Minute.Milliseconds()); err != nil {
+		t.Fatal(err)
+	}
 	verified := request()
 	if !verified.AttributionEnabled || len(verified.Items) != 1 || verified.Items[0].Bytes != 120 ||
 		verified.Observed.Up != 130 || verified.Observed.Down != 80 || verified.Observed.Records != 3 ||
-		verified.Attributed.Bytes != 120 || verified.Unknown.Bytes != 90 ||
+		verified.Attributed.Bytes != 120 || verified.Inferred.Bytes != 120 || verified.Unknown.Bytes != 90 ||
+		verified.DNSEvidenceScope != "recorder_observed" || verified.CoverageComplete ||
 		verified.UnknownReasons["dns_segment_not_covered"].Bytes != 80 ||
 		verified.UnknownReasons["flow_time_unreliable"].Bytes != 10 {
 		t.Fatalf("verified: %+v", verified)

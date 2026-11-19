@@ -1,0 +1,26 @@
+.rule-modal details {
+  border-top: 1px solid #53617855;
+  margin-top: 14px;
+  padding-top: 12px;
+}
+.rule-modal summary {
+  cursor: pointer;
+  font-size: 14px;
+}
+.rule-modal .panelhead,
+.rule-modal details .rule-form {
+  margin-bottom: 14px;
+}
+.rule-modal details .rule-form {
+  margin-top: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+}
+.rule-modal .rule-link {
+  align-self: center;
+  color: inherit;
+  font-size: 13px;
+}
+.rule-modal button:disabled {
+  cursor: default;
+  opacity: .55;
+}

@@ -54,29 +54,31 @@ const (
 
 // Record is one decoded flow record. Fields the template did not carry stay zero.
 type Record struct {
-	TemplateID    uint16
-	IPVersion     uint8
-	Proto         uint8
-	TCPFlags      uint8
-	ICMPType      uint8
-	ICMPCode      uint8
-	SrcPort       uint16
-	DstPort       uint16
-	NatSrcPort    uint16
-	NatDstPort    uint16
-	InIf          uint32
-	OutIf         uint32
-	StartUptimeMs uint32
-	EndUptimeMs   uint32
-	Bytes         uint64
-	Packets       uint64
-	SysInitMs     uint64
-	Src           netip.Addr
-	Dst           netip.Addr
-	NatSrc        netip.Addr
-	NatDst        netip.Addr
-	SrcMAC        [6]byte
-	DstMAC        [6]byte
+	TemplateID     uint16
+	IPVersion      uint8
+	Proto          uint8
+	TCPFlags       uint8
+	ICMPType       uint8
+	ICMPCode       uint8
+	SrcPort        uint16
+	DstPort        uint16
+	NatSrcPort     uint16
+	NatDstPort     uint16
+	InIf           uint32
+	OutIf          uint32
+	StartUptimeMs  uint32
+	EndUptimeMs    uint32
+	HasStartUptime bool
+	HasEndUptime   bool
+	Bytes          uint64
+	Packets        uint64
+	SysInitMs      uint64
+	Src            netip.Addr
+	Dst            netip.Addr
+	NatSrc         netip.Addr
+	NatDst         netip.Addr
+	SrcMAC         [6]byte
+	DstMAC         [6]byte
 }
 
 // Message is one decoded IPFIX message.
@@ -389,10 +391,14 @@ func decodeRecord(tmpl []field, b []byte) (rec Record, n int, ok bool) {
 			rec.OutIf = uint32(uintN(v))
 		case ieFlowEndUptime:
 			rec.EndUptimeMs = uint32(uintN(v))
+			rec.HasEndUptime = len(v) > 0 && len(v) <= 4
 		case ieFlowStartUp:
 			rec.StartUptimeMs = uint32(uintN(v))
+			rec.HasStartUptime = len(v) > 0 && len(v) <= 4
 		case ieSysInitMs:
-			rec.SysInitMs = uintN(v)
+			if len(v) <= 8 {
+				rec.SysInitMs = uintN(v)
+			}
 		case ieIPVersion:
 			rec.IPVersion = uint8(uintN(v))
 		case ieSrcIPv4, ieSrcIPv6:

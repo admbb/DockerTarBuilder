@@ -43,6 +43,62 @@ func testTopology() *flow.Topology {
 		nil)
 }
 
+func TestDNSClockEligibilityRequiresBothPlausibleUptimes(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	exporter := netip.MustParseAddr("192.168.88.1")
+	good := ipfix.Record{
+		Src: netip.MustParseAddr("192.168.88.10"), Dst: netip.MustParseAddr("8.8.8.8"),
+		Proto: 6, Bytes: 123, SysInitMs: uint64(now.Add(-time.Hour).UnixMilli()),
+		StartUptimeMs: 3599000, EndUptimeMs: 3600000, HasStartUptime: true, HasEndUptime: true,
+	}
+	missing, future, tooOld := good, good, good
+	missing.HasStartUptime = false
+	future.StartUptimeMs, future.EndUptimeMs = 3600001, 3600002
+	tooOld.SysInitMs = uint64(now.Add(-4 * time.Hour).UnixMilli())
+	for _, tc := range []struct {
+		name   string
+		record ipfix.Record
+		valid  bool
+	}{
+		{"valid", good, true}, {"missing timestamp", missing, false},
+		{"future timestamp", future, false}, {"old timestamp", tooOld, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := flow.NewNormalizer(testTopology(), time.Minute, 4739)
+			_, _ = n.Normalize(exporter, now.Add(-2*time.Second), &ipfix.Message{ExportTime: uint32(now.Unix() - 2), Records: []ipfix.Record{tc.record}})
+			flows, _ := n.Normalize(exporter, now, &ipfix.Message{ExportTime: uint32(now.Unix()), Records: []ipfix.Record{tc.record}})
+			if len(flows) != 1 || flows[0].Bytes != 123 || (flows[0].TimeQuality == flow.ExporterEstimatedTime) != tc.valid {
+				t.Fatalf("normalized flows: %+v", flows)
+			}
+		})
+	}
+}
+
+func TestDNSClockRejectsDelayAndWarmsUpAfterBootSwitch(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	exporter := netip.MustParseAddr("192.168.88.1")
+	n := flow.NewNormalizer(testTopology(), time.Minute, 4739)
+	record := ipfix.Record{
+		Src: netip.MustParseAddr("192.168.88.10"), Dst: netip.MustParseAddr("8.8.8.8"),
+		Proto: 6, Bytes: 123, SysInitMs: uint64(now.Add(-time.Hour).UnixMilli()),
+		StartUptimeMs: 3598000, EndUptimeMs: 3599000, HasStartUptime: true, HasEndUptime: true,
+	}
+	check := func(recv, stamp time.Time, reliable, reboot bool) {
+		t.Helper()
+		flows, rebooted := n.Normalize(exporter, recv, &ipfix.Message{ExportTime: uint32(stamp.Unix()), Records: []ipfix.Record{record}})
+		if len(flows) != 1 || rebooted != reboot || (flows[0].TimeQuality == flow.ExporterEstimatedTime) != reliable {
+			t.Fatalf("rebooted=%v, flows=%+v", rebooted, flows)
+		}
+	}
+	check(now, now, false, false)
+	check(now.Add(time.Second), now.Add(time.Second), true, false)
+	check(now.Add(10*time.Second), now.Add(2*time.Second), false, false)
+	record.SysInitMs = uint64(now.Add(15 * time.Second).UnixMilli())
+	record.StartUptimeMs, record.EndUptimeMs = 0, 1000
+	check(now.Add(16*time.Second), now.Add(16*time.Second), false, true)
+	check(now.Add(17*time.Second), now.Add(17*time.Second), true, false)
+}
+
 // loadFlows replays the sample capture: real RouterOS 7 export with every
 // address anonymised (see testdata/captures/README.md).
 func loadFlows(t *testing.T) ([]flow.Flow, truth, ipfix.Stats) {

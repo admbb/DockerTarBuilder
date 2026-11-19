@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"netflow-plus-v2/internal/catalog"
@@ -20,7 +21,31 @@ func (s *Server) allApps(ctx context.Context) ([]catalog.App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(append([]catalog.App(nil), s.Apps...), extra...), nil
+	overrides, err := s.Store.AppIconOverrides(ctx)
+	if err != nil {
+		return nil, err
+	}
+	customIDs := make(map[string]bool, len(extra))
+	for _, app := range extra {
+		customIDs[app.ID] = true
+	}
+	apps := make([]catalog.App, 0, len(s.Apps)+len(extra))
+	for _, app := range s.Apps {
+		if !customIDs[app.ID] {
+			apps = append(apps, app)
+		}
+	}
+	apps = append(apps, extra...)
+	for i, app := range apps {
+		if icon, ok := overrides[app.ID]; ok {
+			if icon.SVG != "" {
+				apps[i].Icon = uploadedIconURL(app.ID, icon.SVG)
+			} else if catalog.ValidIcon(icon.Path) {
+				apps[i].Icon = icon.Path
+			}
+		}
+	}
+	return apps, nil
 }
 func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	if !safeMutation(r) {
@@ -54,6 +79,10 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.Store.SaveCustomApp(r.Context(), a); err != nil {
+		if errors.Is(err, storage.ErrAppConflict) {
+			jsonResponse(w, 409, map[string]string{"error": "应用编号已存在"})
+			return
+		}
 		jsonResponse(w, 400, map[string]string{"error": "请检查应用编号、名称和分类"})
 		return
 	}
@@ -65,7 +94,21 @@ func (s *Server) effectiveRules(ctx context.Context) ([]correlation.Rule, error)
 	if err != nil {
 		return nil, err
 	}
-	rules := append([]correlation.Rule(nil), s.Rules...)
+	customApps, err := s.Store.CustomApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	customIDs := make(map[string]bool, len(customApps))
+	for _, app := range customApps {
+		customIDs[app.ID] = true
+	}
+	rules := make([]correlation.Rule, 0, len(s.Rules)+len(user))
+	for _, rule := range s.Rules {
+		// Preserve custom IDs created before a built-in application used the same ID.
+		if !customIDs[rule.AppID] {
+			rules = append(rules, rule)
+		}
+	}
 	for _, v := range user {
 		rules = append(rules, correlation.Rule{Domain: v.Domain, AppID: v.AppID, Exact: v.Match == "exact", Exclude: v.Exclude, Priority: v.Priority})
 	}
@@ -86,7 +129,8 @@ func safeMutation(r *http.Request) bool {
 			return false
 		}
 	}
-	return strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json")
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	return err == nil && mediaType == "application/json"
 }
 func (s *Server) writeRule(w http.ResponseWriter, r *http.Request) {
 	if !safeMutation(r) {
