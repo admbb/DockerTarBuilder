@@ -150,7 +150,15 @@ func (s *Server) summary(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 500, map[string]string{"error": "storage unavailable"})
 		return
 	}
-	for key, value := range s.trafficSummary(status) {
+	answerIndexReady := false
+	if s.FlowEnabled && status.UntilMS > status.FromMS {
+		answerIndexReady, err = s.Store.DNSAnswerIndexReady(r.Context())
+		if err != nil {
+			jsonResponse(w, 500, map[string]string{"error": "storage unavailable"})
+			return
+		}
+	}
+	for key, value := range s.trafficSummary(status, answerIndexReady) {
 		result[key] = value
 	}
 	if s.FlowEnabled {

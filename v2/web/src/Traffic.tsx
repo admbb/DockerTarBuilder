@@ -26,6 +26,7 @@ const reasons: Record<string, string> = {
   unsupported_flow_protocol: "此协议不支持 DNS 归属",
   application_missing: "缺少对应的应用",
   dns_rescan_pending: "DNS 二次扫描未稳定或流量超出稳定区间",
+  dns_index_building: "DNS 证据索引正在建立",
   no_matching_dns: "缺少可匹配的 DNS 证据",
   ambiguous_or_unknown: "多个应用或未识别域名共用地址",
   dns_segment_not_covered: "DNS 有效期未覆盖整个流段",

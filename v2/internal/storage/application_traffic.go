@@ -50,7 +50,7 @@ func (s *Store) TrafficSegments(ctx context.Context, from, until int64, clientIP
 		FROM flow_segments
 		WHERE zone=0 AND received_ms>=? AND received_ms<?
 		  AND (received_ms,exporter,digest,ordinal)>(?,?,?,?)`
-	args := []any{from, until, received, exporter, digest, ordinal}
+	args := []any{received, until, received, exporter, digest, ordinal}
 	if clientIP != "" {
 		query += " AND client_ip=?"
 		args = append(args, clientIP)

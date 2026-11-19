@@ -74,4 +74,12 @@ func TestOlderRetainedAnswerVetoesNewNameWhileTTLIsLive(t *testing.T) {
 	if err != nil || got.AppID != "" || got.Reason != "ambiguous_or_unknown" || len(got.EventIDs) != 2 {
 		t.Fatalf("older live answer must veto: %+v, %v", got, err)
 	}
+	status, err := db.DNSStability(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := a.AnalyzeBatch(ctx, []Interval{{Flow: f, End: f.Start}}, status)
+	if err != nil || len(batch) != 1 || batch[0].AppID != "" || batch[0].Reason != "ambiguous_or_unknown" || len(batch[0].EventIDs) != 2 {
+		t.Fatalf("batched evidence must preserve the historical veto: %+v, %v", batch, err)
+	}
 }

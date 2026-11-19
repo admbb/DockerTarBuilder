@@ -171,6 +171,17 @@ func (s *Server) scanTrafficView(ctx context.Context, out *trafficViewResponse, 
 	out.DNSEvidenceScope = "recorder_observed"
 	out.DNSStableFromMS = stability.FromMS
 	out.DNSStableUntilMS = stability.UntilMS
+	pendingReason := "dns_rescan_pending"
+	if out.AttributionEnabled {
+		ready, err := s.Store.DNSAnswerIndexReady(ctx)
+		if err != nil {
+			return false
+		}
+		if !ready {
+			out.AttributionEnabled = false
+			pendingReason = "dns_index_building"
+		}
+	}
 	if !out.AttributionEnabled && out.Device == "" && len(out.Points) == 0 {
 		count, err := s.Store.ReceivedFlowTotals(ctx, out.FromMS, out.ToMS)
 		if err != nil || !out.Observed.add(count.Up, count.Down, count.Records) {
@@ -178,7 +189,7 @@ func (s *Server) scanTrafficView(ctx context.Context, out *trafficViewResponse, 
 		}
 		out.Unknown = out.Observed
 		if count.Records > 0 {
-			out.UnknownReasons["dns_rescan_pending"] = &out.Unknown
+			out.UnknownReasons[pendingReason] = &out.Unknown
 		}
 		return true
 	}
@@ -193,29 +204,12 @@ func (s *Server) scanTrafficView(ctx context.Context, out *trafficViewResponse, 
 		if err != nil {
 			return false
 		}
-		matches := make(map[trafficMatchKey]correlation.Result)
-		for _, segment := range page {
-			match := correlation.Result{Reason: "dns_rescan_pending"}
-			if out.AttributionEnabled {
-				switch {
-				case segment.TimeQuality != flow.ExporterEstimatedTime || segment.StartMS <= 0 || segment.EndMS < segment.StartMS || segment.EndMS > segment.ReceivedMS:
-					match.Reason = "flow_time_unreliable"
-				case segment.Proto != 6 && segment.Proto != 17:
-					match.Reason = "unsupported_flow_protocol"
-				case stability.FromMS <= max(int64(0), segment.StartMS-window.Milliseconds()) && segment.EndMS < stability.UntilMS:
-					key := trafficMatchKey{segment.ClientIP, segment.RemoteIP, segment.StartMS, segment.EndMS}
-					var cached bool
-					if match, cached = matches[key]; !cached {
-						match, err = analyzer.AnalyzeInterval(ctx, correlation.Flow{
-							ClientIP: segment.ClientIP, RemoteIP: segment.RemoteIP, Start: time.UnixMilli(segment.StartMS),
-						}, time.UnixMilli(segment.EndMS))
-						if err != nil {
-							return false
-						}
-						matches[key] = match
-					}
-				}
-			}
+		matches, err := trafficPageMatches(ctx, page, &analyzer, stability, out.AttributionEnabled, pendingReason)
+		if err != nil {
+			return false
+		}
+		for i, segment := range page {
+			match := matches[i]
 			item := byID[match.AppID]
 			if !out.countSegment(segment, item, match.Reason) {
 				return false
@@ -240,7 +234,7 @@ func (s *Server) scanTrafficView(ctx context.Context, out *trafficViewResponse, 
 			}
 		}
 		if len(page) < storage.TrafficPageSize {
-			if out.Attributed.Records == 0 {
+			if !out.AttributionEnabled {
 				return true
 			}
 			after, err := s.Store.DNSStability(ctx, s.Source)
@@ -252,4 +246,46 @@ func (s *Server) scanTrafficView(ctx context.Context, out *trafficViewResponse, 
 		}
 		cursor = &page[len(page)-1]
 	}
+}
+
+func trafficPageMatches(ctx context.Context, page []storage.TrafficSegment, analyzer *analysis.Analyzer, stability storage.DNSStability, enabled bool, pendingReason string) ([]correlation.Result, error) {
+	matches := make([]correlation.Result, len(page))
+	intervals := make([]analysis.Interval, 0, len(page))
+	positions := make(map[trafficMatchKey]int)
+	matchPositions := make([]int, len(page))
+	for i, segment := range page {
+		matchPositions[i] = -1
+		matches[i].Reason = pendingReason
+		if !enabled {
+			continue
+		}
+		switch {
+		case segment.TimeQuality != flow.ExporterEstimatedTime || segment.StartMS <= 0 || segment.EndMS < segment.StartMS || segment.EndMS > segment.ReceivedMS:
+			matches[i].Reason = "flow_time_unreliable"
+		case segment.Proto != 6 && segment.Proto != 17:
+			matches[i].Reason = "unsupported_flow_protocol"
+		case stability.FromMS <= max(int64(0), segment.StartMS-analyzer.Window.Milliseconds()) && segment.EndMS < stability.UntilMS:
+			key := trafficMatchKey{segment.ClientIP, segment.RemoteIP, segment.StartMS, segment.EndMS}
+			position, cached := positions[key]
+			if !cached {
+				position = len(intervals)
+				positions[key] = position
+				intervals = append(intervals, analysis.Interval{
+					Flow: correlation.Flow{ClientIP: segment.ClientIP, RemoteIP: segment.RemoteIP, Start: time.UnixMilli(segment.StartMS)},
+					End:  time.UnixMilli(segment.EndMS),
+				})
+			}
+			matchPositions[i] = position
+		}
+	}
+	attributed, err := analyzer.AnalyzeBatch(ctx, intervals, stability)
+	if err != nil {
+		return nil, err
+	}
+	for i, position := range matchPositions {
+		if position >= 0 {
+			matches[i] = attributed[position]
+		}
+	}
+	return matches, nil
 }

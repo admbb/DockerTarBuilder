@@ -52,8 +52,8 @@ type trafficRanking struct {
 	Note               string                   `json:"note"`
 }
 
-func (s *Server) trafficSummary(status storage.DNSStability) map[string]any {
-	enabled := s.FlowEnabled && status.UntilMS > status.FromMS
+func (s *Server) trafficSummary(status storage.DNSStability, answerIndexReady bool) map[string]any {
+	enabled := s.FlowEnabled && status.UntilMS > status.FromMS && answerIndexReady
 	out := map[string]any{
 		"app_traffic_available":           s.FlowEnabled,
 		"app_traffic_attribution_enabled": enabled,
@@ -66,8 +66,10 @@ func (s *Server) trafficSummary(status storage.DNSStability) map[string]any {
 	switch {
 	case !s.FlowEnabled:
 		out["app_traffic_reason"] = "ipfix_not_configured"
-	case !enabled:
+	case status.UntilMS <= status.FromMS:
 		out["app_traffic_reason"] = "dns_rescan_pending"
+	case !answerIndexReady:
+		out["app_traffic_reason"] = "dns_index_building"
 	default:
 		out["app_traffic_reason"] = "dns_recorder_inferred"
 	}

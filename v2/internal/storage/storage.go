@@ -14,7 +14,11 @@ import (
 	"netflow-plus-v2/internal/oxidns"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db              *sql.DB
+	stopDNSBackfill context.CancelFunc
+	dnsBackfillDone chan struct{}
+}
 
 var ErrDNSEvidenceLimit = errors.New("DNS evidence limit exceeded")
 
@@ -70,7 +74,17 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db}, nil
+	if err = initDNSAnswerIndex(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &Store{db: db, stopDNSBackfill: cancel, dnsBackfillDone: make(chan struct{})}
+	go func() {
+		defer close(store.dnsBackfillDone)
+		store.runDNSAnswerBackfill(ctx)
+	}()
+	return store, nil
 }
 
 func backfillDNSAggregates(db *sql.DB) error {
@@ -98,7 +112,11 @@ func backfillDNSAggregates(db *sql.DB) error {
 	}
 	return tx.Commit()
 }
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	s.stopDNSBackfill()
+	<-s.dnsBackfillDone
+	return s.db.Close()
+}
 
 // InitializeSource sets an explicit historical lower bound once, without
 // overwriting an existing source's progress.
