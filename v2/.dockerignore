@@ -1,0 +1,10 @@
+.env*
+**/.env*
+.git
+node_modules
+web/node_modules
+web/dist
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*

@@ -1,0 +1,264 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "domain": "youtube.com",
+      "match": "suffix",
+      "appId": "youtube",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/youtube"
+    },
+    {
+      "domain": "youtube-nocookie.com",
+      "match": "suffix",
+      "appId": "youtube",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/youtube"
+    },
+    {
+      "domain": "netflix.com",
+      "match": "suffix",
+      "appId": "netflix",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/netflix"
+    },
+    {
+      "domain": "bilibili.com",
+      "match": "suffix",
+      "appId": "bilibili",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/bilibili"
+    },
+    {
+      "domain": "douyin.com",
+      "match": "suffix",
+      "appId": "douyin",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "spotify.com",
+      "match": "suffix",
+      "appId": "spotify",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/spotify"
+    },
+    {
+      "domain": "telegram.org",
+      "match": "suffix",
+      "appId": "telegram",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "discord.com",
+      "match": "suffix",
+      "appId": "discord",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "steampowered.com",
+      "match": "suffix",
+      "appId": "steam",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "chatgpt.com",
+      "match": "suffix",
+      "appId": "chatgpt",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "api.openai.com",
+      "match": "exact",
+      "appId": "openai_api",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "deepseek.com",
+      "match": "suffix",
+      "appId": "deepseek",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "github.com",
+      "match": "suffix",
+      "appId": "github",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/github"
+    },
+    {
+      "domain": "gitlab.com",
+      "match": "suffix",
+      "appId": "gitlab",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "hub.docker.com",
+      "match": "exact",
+      "appId": "dockerhub",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "pypi.org",
+      "match": "suffix",
+      "appId": "pypi",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "npmjs.com",
+      "match": "suffix",
+      "appId": "npm",
+      "source": "curated",
+      "confidence": "high",
+      "enabled": true
+    },
+    {
+      "domain": "netflix.net",
+      "match": "suffix",
+      "appId": "netflix",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/netflix"
+    },
+    {
+      "domain": "nflxvideo.net",
+      "match": "suffix",
+      "appId": "netflix",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/netflix"
+    },
+    {
+      "domain": "nflximg.net",
+      "match": "suffix",
+      "appId": "netflix",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/netflix"
+    },
+    {
+      "domain": "youtu.be",
+      "match": "suffix",
+      "appId": "youtube",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/youtube"
+    },
+    {
+      "domain": "youtubekids.com",
+      "match": "suffix",
+      "appId": "youtube",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/youtube"
+    },
+    {
+      "domain": "b23.tv",
+      "match": "suffix",
+      "appId": "bilibili",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/bilibili"
+    },
+    {
+      "domain": "biliapi.net",
+      "match": "suffix",
+      "appId": "bilibili",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/bilibili"
+    },
+    {
+      "domain": "bilibili.cn",
+      "match": "suffix",
+      "appId": "bilibili",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/bilibili"
+    },
+    {
+      "domain": "spotifycdn.com",
+      "match": "suffix",
+      "appId": "spotify",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/spotify"
+    },
+    {
+      "domain": "spotifycdn.net",
+      "match": "suffix",
+      "appId": "spotify",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/spotify"
+    },
+    {
+      "domain": "spoti.fi",
+      "match": "suffix",
+      "appId": "spotify",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/spotify"
+    },
+    {
+      "domain": "githubstatus.com",
+      "match": "suffix",
+      "appId": "github",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/github"
+    },
+    {
+      "domain": "github.blog",
+      "match": "suffix",
+      "appId": "github",
+      "source": "verified-curated",
+      "confidence": "high",
+      "enabled": true,
+      "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/github"
+    }
+  ]
+}

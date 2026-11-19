@@ -1,0 +1,27 @@
+name: NetFlow V2 isolated image check
+on:
+  push:
+    branches: [netflow-v2-image-check]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated image
+        run: docker build -t netflow-v2-check:local ./v2
+      - name: Start without external sources
+        run: docker run -d --name netflow-v2-check -e APP_PASSWORD=ci-test -p 127.0.0.1:18088:8088 netflow-v2-check:local
+      - name: Verify health, authentication and persistence
+        run: |
+          set -eu
+          for n in $(seq 1 30); do curl -fsS http://127.0.0.1:18088/healthz && break || sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/api/summary)" = 401
+          curl -fsS -u v2:ci-test http://127.0.0.1:18088/api/summary > /dev/null
+          docker exec netflow-v2-check sh -ec 'test "$(id -u)" -ne 0 && test -w /data && test -s /data/app.db'
+      - name: Print logs on failure
+        if: failure()
+        run: docker logs netflow-v2-check || true

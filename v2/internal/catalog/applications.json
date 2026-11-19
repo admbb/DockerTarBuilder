@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "applications": [
+    {"id":"youtube","name":"YouTube","category":"video"},
+    {"id":"netflix","name":"Netflix","category":"video"},
+    {"id":"bilibili","name":"哔哩哔哩","category":"video"},
+    {"id":"douyin","name":"抖音","category":"video"},
+    {"id":"spotify","name":"Spotify","category":"music"},
+    {"id":"telegram","name":"Telegram","category":"social"},
+    {"id":"discord","name":"Discord","category":"social"},
+    {"id":"steam","name":"Steam","category":"gaming"},
+    {"id":"chatgpt","name":"ChatGPT","category":"ai"},
+    {"id":"openai_api","name":"OpenAI API","category":"ai"},
+    {"id":"deepseek","name":"DeepSeek","category":"ai"},
+    {"id":"github","name":"GitHub","category":"developer"},
+    {"id":"gitlab","name":"GitLab","category":"developer"},
+    {"id":"dockerhub","name":"Docker Hub","category":"developer"},
+    {"id":"pypi","name":"PyPI","category":"developer"},
+    {"id":"npm","name":"npm","category":"developer"}
+  ]
+}
