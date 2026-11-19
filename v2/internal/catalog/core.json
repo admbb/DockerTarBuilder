@@ -259,6 +259,168 @@
       "confidence": "high",
       "enabled": true,
       "sourceVersion": "v2fly:41504eae2a11f305fe88cfc605cf6c105a80bf5a/github"
+    },
+    {
+      "domain": "wechat.com",
+      "match": "suffix",
+      "appId": "wechat",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "weixin.qq.com",
+      "match": "suffix",
+      "appId": "wechat",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "im.qq.com",
+      "match": "suffix",
+      "appId": "qq",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "apple.com",
+      "match": "suffix",
+      "appId": "apple",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "icloud.com",
+      "match": "suffix",
+      "appId": "icloud",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "icloud.com.cn",
+      "match": "suffix",
+      "appId": "icloud",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "google.com",
+      "match": "suffix",
+      "appId": "google",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "mail.google.com",
+      "match": "suffix",
+      "appId": "gmail",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "whatsapp.com",
+      "match": "suffix",
+      "appId": "whatsapp",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "whatsapp.net",
+      "match": "suffix",
+      "appId": "whatsapp",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "instagram.com",
+      "match": "suffix",
+      "appId": "instagram",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "facebook.com",
+      "match": "suffix",
+      "appId": "facebook",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "fbcdn.net",
+      "match": "suffix",
+      "appId": "facebook",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "baidu.com",
+      "match": "suffix",
+      "appId": "baidu",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "aliyun.com",
+      "match": "suffix",
+      "appId": "alibabacloud",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "taobao.com",
+      "match": "suffix",
+      "appId": "taobao",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "xiaohongshu.com",
+      "match": "suffix",
+      "appId": "xiaohongshu",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
+    },
+    {
+      "domain": "music.163.com",
+      "match": "suffix",
+      "appId": "neteasecloudmusic",
+      "source": "verified-curated",
+      "confidence": "medium",
+      "enabled": true,
+      "sourceVersion": "canonical-brand-domain-v1"
     }
   ]
 }
