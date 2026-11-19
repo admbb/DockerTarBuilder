@@ -39,6 +39,9 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 400, map[string]string{"error": "应用格式无效"})
 		return
 	}
+	a.ID = strings.TrimSpace(a.ID)
+	a.Name = strings.TrimSpace(a.Name)
+	a.Category = strings.TrimSpace(a.Category)
 	apps, err := s.allApps(r.Context())
 	if err != nil {
 		jsonResponse(w, 500, map[string]string{"error": "应用读取失败"})
